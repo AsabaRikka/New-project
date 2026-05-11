@@ -10,11 +10,12 @@ import {
   Images,
   List,
   Play,
+  Save,
   Shuffle,
   Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { BatchParams, TaskExecutionMode, TaskPipelineStep, TaskProgress, TaskResult, TaskType } from "../lib/types";
+import type { BatchParams, FavoriteTask, TaskExecutionMode, TaskPipelineStep, TaskProgress, TaskResult, TaskType } from "../lib/types";
 
 interface BatchToolPanelProps {
   projectName: string;
@@ -22,6 +23,7 @@ interface BatchToolPanelProps {
   taskType: TaskType;
   executionMode: TaskExecutionMode;
   pipelineSteps: TaskPipelineStep[];
+  favoriteTasks: FavoriteTask[];
   inputs: string[];
   params: BatchParams;
   isRunning: boolean;
@@ -31,6 +33,9 @@ interface BatchToolPanelProps {
   onTaskTypeChange: (value: TaskType) => void;
   onExecutionModeChange: (value: TaskExecutionMode) => void;
   onPipelineStepsChange: (value: TaskPipelineStep[]) => void;
+  onSaveFavoriteTask: (name: string) => void;
+  onApplyFavoriteTask: (id: string) => void;
+  onDeleteFavoriteTask: (id: string) => void;
   onInputsChange: (inputs: string[]) => void;
   onParamsChange: (params: BatchParams) => void;
   onRun: () => Promise<TaskResult | null>;
@@ -52,6 +57,7 @@ export function BatchToolPanel({
   taskType,
   executionMode,
   pipelineSteps,
+  favoriteTasks,
   inputs,
   params,
   isRunning,
@@ -61,6 +67,9 @@ export function BatchToolPanel({
   onTaskTypeChange,
   onExecutionModeChange,
   onPipelineStepsChange,
+  onSaveFavoriteTask,
+  onApplyFavoriteTask,
+  onDeleteFavoriteTask,
   onInputsChange,
   onParamsChange,
   onRun,
@@ -68,6 +77,8 @@ export function BatchToolPanel({
   const [selectedInputs, setSelectedInputs] = useState<Set<string>>(new Set());
   const [isQueueExpanded, setIsQueueExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<"list" | "thumb">("list");
+  const [favoriteName, setFavoriteName] = useState("");
+  const [selectedFavoriteId, setSelectedFavoriteId] = useState("");
   const selectedCount = selectedInputs.size;
   const imageExtensions = useMemo(() => new Set(["jpg", "jpeg", "png", "webp"]), []);
 
@@ -167,6 +178,23 @@ export function BatchToolPanel({
     onPipelineStepsChange(next);
   }
 
+  function saveFavorite() {
+    onSaveFavoriteTask(favoriteName);
+  }
+
+  function applyFavorite(id: string) {
+    setSelectedFavoriteId(id);
+    onApplyFavoriteTask(id);
+  }
+
+  function deleteFavorite() {
+    if (!selectedFavoriteId) {
+      return;
+    }
+    onDeleteFavoriteTask(selectedFavoriteId);
+    setSelectedFavoriteId("");
+  }
+
   return (
     <section className="panel panel--primary">
       <div className="panel__header">
@@ -191,6 +219,36 @@ export function BatchToolPanel({
             ))}
           </select>
         </label>
+      </div>
+
+      <div className="favorite-panel">
+        <div className="favorite-panel__save">
+          <label>
+            <span>常用任务名称</span>
+            <input value={favoriteName} onChange={(event) => setFavoriteName(event.target.value)} placeholder="例如：九宫格切分后转 JPG" />
+          </label>
+          <button className="secondary-button" type="button" onClick={saveFavorite}>
+            <Save size={16} />
+            保存当前任务为常用任务
+          </button>
+        </div>
+        <div className="favorite-panel__load">
+          <label>
+            <span>调用常用任务</span>
+            <select value={selectedFavoriteId} onChange={(event) => applyFavorite(event.target.value)}>
+              <option value="">选择常用任务</option>
+              {favoriteTasks.map((favorite) => (
+                <option key={favorite.id} value={favorite.id}>
+                  {favorite.name} · {favorite.execution_mode === "single" ? "单任务" : favorite.execution_mode === "serial" ? "串联" : "并联"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="ghost-button" type="button" onClick={deleteFavorite} disabled={!selectedFavoriteId}>
+            <Trash2 size={16} />
+            删除
+          </button>
+        </div>
       </div>
 
       <div className="run-mode-panel">

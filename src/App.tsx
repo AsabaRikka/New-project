@@ -6,6 +6,7 @@ import { createTask, getAppConfig, listTasks, saveAppConfig } from "./lib/api";
 import type {
   AppConfig,
   BatchParams,
+  FavoriteTask,
   TaskExecutionMode,
   TaskPipelineStep,
   TaskProgress,
@@ -57,12 +58,15 @@ const defaultBatchParams: BatchParams = {
   background: "#ffffff",
 };
 
+const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
+
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskType, setSelectedTaskType] = useState<TaskType>("rename");
   const [executionMode, setExecutionMode] = useState<TaskExecutionMode>("single");
   const [pipelineSteps, setPipelineSteps] = useState<TaskPipelineStep[]>([]);
+  const [favoriteTasks, setFavoriteTasks] = useState<FavoriteTask[]>([]);
   const [projectName, setProjectName] = useState("default-project");
   const [outputDir, setOutputDir] = useState("");
   const [inputs, setInputs] = useState<string[]>([]);
@@ -75,6 +79,7 @@ export function App() {
     void Promise.all([getAppConfig(), listTasks()]).then(([nextConfig, nextTasks]) => {
       setConfig(nextConfig);
       setTasks(nextTasks);
+      setFavoriteTasks(loadFavoriteTasks());
       setOutputDir(nextConfig.default_output_dir ?? "");
       setStatusMessage("Phase 1 就绪");
     });
@@ -213,6 +218,53 @@ export function App() {
     setTasks(await listTasks());
   }
 
+  function handleSaveFavoriteTask(name: string) {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setStatusMessage("请先输入常用任务名称");
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const existing = favoriteTasks.find((task) => task.name === trimmedName);
+    const favorite: FavoriteTask = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name: trimmedName,
+      execution_mode: executionMode,
+      task_type: selectedTaskType,
+      params: sanitizeParams(batchParams),
+      pipeline_steps: pipelineSteps.map(clonePipelineStep),
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+    };
+    const nextFavorites = existing
+      ? favoriteTasks.map((task) => (task.id === existing.id ? favorite : task))
+      : [favorite, ...favoriteTasks];
+    saveFavoriteTasks(nextFavorites);
+    setFavoriteTasks(nextFavorites);
+    setStatusMessage(`已保存常用任务：${trimmedName}`);
+  }
+
+  function handleApplyFavoriteTask(favoriteId: string) {
+    const favorite = favoriteTasks.find((task) => task.id === favoriteId);
+    if (!favorite) {
+      return;
+    }
+
+    setExecutionMode(favorite.execution_mode);
+    setSelectedTaskType(favorite.task_type);
+    setBatchParams({ ...defaultBatchParams, ...favorite.params });
+    setPipelineSteps(favorite.pipeline_steps.map(clonePipelineStep));
+    setStatusMessage(`已调用常用任务：${favorite.name}`);
+  }
+
+  function handleDeleteFavoriteTask(favoriteId: string) {
+    const nextFavorites = favoriteTasks.filter((task) => task.id !== favoriteId);
+    saveFavoriteTasks(nextFavorites);
+    setFavoriteTasks(nextFavorites);
+    setStatusMessage("已删除常用任务");
+  }
+
   if (!config) {
     return <main className="loading">加载中...</main>;
   }
@@ -272,6 +324,7 @@ export function App() {
             taskType={selectedTaskType}
             executionMode={executionMode}
             pipelineSteps={pipelineSteps}
+            favoriteTasks={favoriteTasks}
             inputs={inputs}
             params={batchParams}
             isRunning={isRunning}
@@ -281,6 +334,9 @@ export function App() {
             onTaskTypeChange={setSelectedTaskType}
             onExecutionModeChange={setExecutionMode}
             onPipelineStepsChange={setPipelineSteps}
+            onSaveFavoriteTask={handleSaveFavoriteTask}
+            onApplyFavoriteTask={handleApplyFavoriteTask}
+            onDeleteFavoriteTask={handleDeleteFavoriteTask}
             onInputsChange={setInputs}
             onParamsChange={setBatchParams}
             onRun={handleRunBatchTask}
@@ -327,6 +383,39 @@ function sanitizeParams(params: BatchParams) {
   return Object.fromEntries(
     Object.entries(params).filter(([, value]) => value !== null && value !== ""),
   );
+}
+
+function loadFavoriteTasks(): FavoriteTask[] {
+  try {
+    const raw = window.localStorage.getItem(favoriteTasksStorageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isFavoriteTask) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavoriteTasks(favorites: FavoriteTask[]) {
+  window.localStorage.setItem(favoriteTasksStorageKey, JSON.stringify(favorites));
+}
+
+function isFavoriteTask(value: unknown): value is FavoriteTask {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<FavoriteTask>;
+  return Boolean(candidate.id && candidate.name && candidate.execution_mode && candidate.task_type);
+}
+
+function clonePipelineStep(step: TaskPipelineStep): TaskPipelineStep {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${step.task_type}`,
+    task_type: step.task_type,
+    params: { ...step.params },
+  };
 }
 
 function createEmptyTaskSummary(results: TaskResult[]): TaskResult {

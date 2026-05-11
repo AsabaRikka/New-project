@@ -308,6 +308,24 @@ code {
   margin: 16px 0;
 }
 
+.favorite-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8fbfc;
+  border: 1px solid #dbe5ec;
+  border-radius: 8px;
+}
+
+.favorite-panel__save,
+.favorite-panel__load {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .run-mode-panel {
   display: grid;
   gap: 12px;
@@ -640,6 +658,11 @@ code {
 
   .queue-actions {
     justify-content: flex-start;
+  }
+
+  .favorite-panel__save,
+  .favorite-panel__load {
+    grid-template-columns: 1fr;
   }
 
   .panel--primary {

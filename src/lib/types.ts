@@ -56,6 +56,17 @@ export interface TaskPipelineStep {
   params: Record<string, unknown>;
 }
 
+export interface FavoriteTask {
+  id: string;
+  name: string;
+  execution_mode: TaskExecutionMode;
+  task_type: TaskType;
+  params: Record<string, unknown>;
+  pipeline_steps: TaskPipelineStep[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TaskResult {
   task_id: string;
   status: TaskStatus;
