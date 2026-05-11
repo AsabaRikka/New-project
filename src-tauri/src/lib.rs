@@ -149,6 +149,29 @@ struct TaskResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AiTestTarget {
+    Text,
+    Vision,
+    Image,
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiConnectionTestRequest {
+    target: AiTestTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiConnectionTestResult {
+    target: String,
+    model: String,
+    ok: bool,
+    status: Option<u16>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileResult {
     input_path: String,
     output_path: Option<String>,
@@ -178,6 +201,7 @@ struct TaskRecord {
     success_count: u32,
     failed_count: u32,
     output_dir: Option<String>,
+    last_error: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -260,6 +284,33 @@ fn clear_api_key(state: tauri::State<'_, AppState>) -> AppResult<bool> {
 }
 
 #[tauri::command]
+fn test_ai_connection(
+    request: AiConnectionTestRequest,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<AiConnectionTestResult>> {
+    let context = AiTaskContext::from_state(&state)?
+        .ok_or_else(|| AppError::InvalidParams("请先保存 API Key".to_string()))?;
+    let targets = match request.target {
+        AiTestTarget::All => vec![
+            AiTestTarget::Text,
+            AiTestTarget::Vision,
+            AiTestTarget::Image,
+        ],
+        target => vec![target],
+    };
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            context.config.timeout_seconds.max(10),
+        ))
+        .build()?;
+
+    Ok(targets
+        .into_iter()
+        .map(|target| run_ai_connection_test(&client, &context, target))
+        .collect())
+}
+
+#[tauri::command]
 fn create_task(
     request: TaskRequest,
     app_handle: AppHandle,
@@ -283,8 +334,8 @@ fn create_task(
         db.execute(
             "insert into tasks (
                 id, task_type, status, input_count, success_count, failed_count,
-                output_dir, params_json, created_at, updated_at
-            ) values (?1, ?2, ?3, ?4, 0, 0, ?5, ?6, ?7, ?8)",
+                output_dir, params_json, last_error, created_at, updated_at
+            ) values (?1, ?2, ?3, ?4, 0, 0, ?5, ?6, null, ?7, ?8)",
             params![
                 id,
                 task_type_json,
@@ -305,6 +356,7 @@ fn create_task(
         0,
         0,
         Some(&output_dir_string),
+        None,
     )?;
     emit_progress(
         Some(&app_handle),
@@ -346,6 +398,7 @@ fn create_task(
                 report.success_count,
                 report.failed_count,
                 Some(&report.output_dir),
+                first_error(&report.files),
             )?;
             emit_progress(
                 Some(&app_handle),
@@ -387,6 +440,7 @@ fn create_task(
                 0,
                 input_count,
                 Some(&output_dir_string),
+                Some(&error.to_string()),
             )?;
             emit_progress(
                 Some(&app_handle),
@@ -422,7 +476,7 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     let mut statement = db.prepare(
         "select
             id, task_type, status, input_count, success_count, failed_count,
-            output_dir, created_at, updated_at
+            output_dir, last_error, created_at, updated_at
         from tasks
         order by datetime(created_at) desc",
     )?;
@@ -431,6 +485,8 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
         let task_type_json: String = row.get(1)?;
         let status_json: String = row.get(2)?;
 
+        let output_dir: Option<String> = row.get(6)?;
+        let last_error: Option<String> = row.get(7)?;
         Ok(TaskRecord {
             id: row.get(0)?,
             task_type: serde_json::from_str(&task_type_json).unwrap_or(TaskType::Organize),
@@ -438,9 +494,11 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
             input_count: row.get(3)?,
             success_count: row.get(4)?,
             failed_count: row.get(5)?,
-            output_dir: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
+            last_error: last_error
+                .or_else(|| output_dir.as_deref().and_then(read_report_first_error)),
+            output_dir,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
         })
     })?;
 
@@ -450,6 +508,16 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     }
 
     Ok(records)
+}
+
+fn read_report_first_error(output_dir: &str) -> Option<String> {
+    let report_path = Path::new(output_dir).join("report").join("report.json");
+    let report: TaskReport = serde_json::from_str(&fs::read_to_string(report_path).ok()?).ok()?;
+    report
+        .files
+        .iter()
+        .find(|file| file.status == "failed")
+        .and_then(|file| file.error.clone())
 }
 
 #[tauri::command]
@@ -490,19 +558,21 @@ fn update_task_status(
     success_count: u32,
     failed_count: u32,
     output_dir: Option<&str>,
+    last_error: Option<&str>,
 ) -> AppResult<()> {
     let status_json = serde_json::to_string(status)?;
     let now = Utc::now().to_rfc3339();
     let db = state.db.lock().expect("database mutex poisoned");
     db.execute(
         "update tasks
-        set status = ?1, success_count = ?2, failed_count = ?3, output_dir = ?4, updated_at = ?5
-        where id = ?6",
+        set status = ?1, success_count = ?2, failed_count = ?3, output_dir = ?4, last_error = ?5, updated_at = ?6
+        where id = ?7",
         params![
             status_json,
             success_count,
             failed_count,
             output_dir,
+            last_error,
             now,
             task_id
         ],
@@ -675,6 +745,13 @@ fn emit_progress(app_handle: Option<&AppHandle>, progress: TaskProgress) {
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit("task-progress", progress);
     }
+}
+
+fn first_error(files: &[FileResult]) -> Option<&str> {
+    files
+        .iter()
+        .find(|file| file.status == "failed")
+        .and_then(|file| file.error.as_deref())
 }
 
 fn process_rename(
@@ -1755,6 +1832,164 @@ fn request_chat_analysis(
     parse_model_json_output(&response)
 }
 
+fn run_ai_connection_test(
+    client: &reqwest::blocking::Client,
+    context: &AiTaskContext,
+    target: AiTestTarget,
+) -> AiConnectionTestResult {
+    match target {
+        AiTestTarget::Text => test_text_model(client, context),
+        AiTestTarget::Vision => test_vision_model(client, context),
+        AiTestTarget::Image => test_image_model(client, context),
+        AiTestTarget::All => AiConnectionTestResult {
+            target: "all".to_string(),
+            model: "".to_string(),
+            ok: false,
+            status: None,
+            message: "内部错误：all 应在调用前展开".to_string(),
+        },
+    }
+}
+
+fn test_text_model(
+    client: &reqwest::blocking::Client,
+    context: &AiTaskContext,
+) -> AiConnectionTestResult {
+    let url = format!(
+        "{}/responses",
+        context.config.base_url.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": context.config.text_model,
+        "input": "Return exactly: ok"
+    });
+    parse_test_response(
+        "text",
+        &context.config.text_model,
+        client
+            .post(url)
+            .bearer_auth(&context.api_key)
+            .json(&body)
+            .send(),
+    )
+}
+
+fn test_vision_model(
+    client: &reqwest::blocking::Client,
+    context: &AiTaskContext,
+) -> AiConnectionTestResult {
+    let url = format!(
+        "{}/responses",
+        context.config.base_url.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": context.config.vision_model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "Reply with one short word describing the image color." },
+                    { "type": "input_image", "image_url": test_png_data_url() }
+                ]
+            }
+        ]
+    });
+    parse_test_response(
+        "vision",
+        &context.config.vision_model,
+        client
+            .post(url)
+            .bearer_auth(&context.api_key)
+            .json(&body)
+            .send(),
+    )
+}
+
+fn test_image_model(
+    client: &reqwest::blocking::Client,
+    context: &AiTaskContext,
+) -> AiConnectionTestResult {
+    let url = format!(
+        "{}/images/generations",
+        context.config.base_url.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": context.config.image_model,
+        "prompt": "A tiny plain green square icon",
+        "size": "1024x1024",
+        "n": 1
+    });
+    parse_test_response(
+        "image",
+        &context.config.image_model,
+        client
+            .post(url)
+            .bearer_auth(&context.api_key)
+            .json(&body)
+            .send(),
+    )
+}
+
+fn parse_test_response(
+    target: &str,
+    model: &str,
+    response: Result<reqwest::blocking::Response, reqwest::Error>,
+) -> AiConnectionTestResult {
+    match response {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                AiConnectionTestResult {
+                    target: target.to_string(),
+                    model: model.to_string(),
+                    ok: true,
+                    status: Some(status.as_u16()),
+                    message: "联通成功".to_string(),
+                }
+            } else {
+                let message = response
+                    .text()
+                    .unwrap_or_else(|_| "无法读取错误响应".to_string());
+                AiConnectionTestResult {
+                    target: target.to_string(),
+                    model: model.to_string(),
+                    ok: false,
+                    status: Some(status.as_u16()),
+                    message: summarize_error_message(&message),
+                }
+            }
+        }
+        Err(error) => AiConnectionTestResult {
+            target: target.to_string(),
+            model: model.to_string(),
+            ok: false,
+            status: error.status().map(|status| status.as_u16()),
+            message: error.to_string(),
+        },
+    }
+}
+
+fn summarize_error_message(message: &str) -> String {
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(message);
+    if let Ok(value) = parsed {
+        if let Some(error_message) = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(|value| value.as_str())
+        {
+            return error_message.to_string();
+        }
+        if let Some(error_message) = value.get("message").and_then(|value| value.as_str()) {
+            return error_message.to_string();
+        }
+    }
+    message.chars().take(500).collect()
+}
+
+fn test_png_data_url() -> &'static str {
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNk+M8AAwUBAWwA0L4AAAAASUVORK5CYII="
+}
+
 fn build_ad_analysis_prompt(
     input: &Path,
     language: &str,
@@ -2479,6 +2714,7 @@ pub fn run() {
             save_app_config,
             save_api_key,
             clear_api_key,
+            test_ai_connection,
             create_task,
             list_tasks,
             list_ai_results
@@ -2532,6 +2768,7 @@ fn migrate_database(db: &Connection) -> AppResult<()> {
             failed_count integer not null,
             output_dir text,
             params_json text not null,
+            last_error text,
             created_at text not null,
             updated_at text not null
         );
@@ -2553,6 +2790,23 @@ fn migrate_database(db: &Connection) -> AppResult<()> {
         ",
     )?;
 
+    ensure_column(db, "tasks", "last_error", "text")?;
+
+    Ok(())
+}
+
+fn ensure_column(db: &Connection, table: &str, column: &str, definition: &str) -> AppResult<()> {
+    let mut statement = db.prepare(&format!("pragma table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(());
+        }
+    }
+    db.execute(
+        &format!("alter table {table} add column {column} {definition}"),
+        [],
+    )?;
     Ok(())
 }
 

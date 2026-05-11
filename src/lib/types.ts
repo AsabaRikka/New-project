@@ -135,8 +135,19 @@ export interface TaskRecord {
   success_count: number;
   failed_count: number;
   output_dir: string | null;
+  last_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type AiConnectionTestTarget = "text" | "vision" | "image" | "all";
+
+export interface AiConnectionTestResult {
+  target: string;
+  model: string;
+  ok: boolean;
+  status: number | null;
+  message: string;
 }
 
 export interface AiResultRecord {

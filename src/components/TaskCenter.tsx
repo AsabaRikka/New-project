@@ -39,6 +39,7 @@ export function TaskCenter({ tasks }: TaskCenterProps) {
                     {task.status} · 输入 {task.input_count} · 成功 {task.success_count} · 失败{" "}
                     {task.failed_count}
                   </span>
+                  {task.last_error && <p className="task-row__error">{task.last_error}</p>}
                 </div>
               </article>
             );

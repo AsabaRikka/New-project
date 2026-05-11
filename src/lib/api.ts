@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AiResultRecord, AppConfig, TaskRecord, TaskRequest, TaskResult } from "./types";
+import type { AiConnectionTestResult, AiConnectionTestTarget, AiResultRecord, AppConfig, TaskRecord, TaskRequest, TaskResult } from "./types";
 
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 
@@ -28,6 +28,7 @@ const demoTasks: TaskRecord[] = [
     success_count: 0,
     failed_count: 0,
     output_dir: null,
+    last_error: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -63,6 +64,22 @@ export async function clearApiKey(): Promise<boolean> {
   }
 
   return invoke<boolean>("clear_api_key");
+}
+
+export async function testAiConnection(target: AiConnectionTestTarget): Promise<AiConnectionTestResult[]> {
+  if (!isTauriRuntime) {
+    return [
+      {
+        target,
+        model: "demo-model",
+        ok: true,
+        status: 200,
+        message: "浏览器预览模式：模拟联通成功",
+      },
+    ];
+  }
+
+  return invoke<AiConnectionTestResult[]>("test_ai_connection", { request: { target } });
 }
 
 export async function listTasks(): Promise<TaskRecord[]> {

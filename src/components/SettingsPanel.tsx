@@ -1,7 +1,7 @@
-import { KeyRound, Save } from "lucide-react";
+import { KeyRound, Save, Wifi } from "lucide-react";
 import { useState } from "react";
-import { clearApiKey, saveApiKey } from "../lib/api";
-import type { AppConfig } from "../lib/types";
+import { clearApiKey, saveApiKey, testAiConnection } from "../lib/api";
+import type { AiConnectionTestResult, AiConnectionTestTarget, AppConfig } from "../lib/types";
 
 interface SettingsPanelProps {
   config: AppConfig;
@@ -13,6 +13,8 @@ export function SettingsPanel({ config, onChange, onSave }: SettingsPanelProps) 
   const ai = config.ai_provider;
   const [apiKey, setApiKey] = useState("");
   const [secretStatus, setSecretStatus] = useState("");
+  const [testResults, setTestResults] = useState<AiConnectionTestResult[]>([]);
+  const [testingTarget, setTestingTarget] = useState<AiConnectionTestTarget | null>(null);
 
   async function handleSaveApiKey() {
     const saved = await saveApiKey(apiKey);
@@ -31,6 +33,31 @@ export function SettingsPanel({ config, onChange, onSave }: SettingsPanelProps) 
       ai_provider: { ...ai, api_key_set: false },
     });
     setSecretStatus("API Key 已清除");
+  }
+
+  async function handleTestConnection(target: AiConnectionTestTarget) {
+    setTestingTarget(target);
+    setSecretStatus("正在测试 API 和模型联通...");
+    try {
+      const results = await testAiConnection(target);
+      setTestResults(results);
+      const failed = results.filter((result) => !result.ok);
+      setSecretStatus(failed.length === 0 ? "模型联通测试通过" : `模型联通失败 ${failed.length} 项`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "联通测试失败";
+      setTestResults([
+        {
+          target,
+          model: target,
+          ok: false,
+          status: null,
+          message,
+        },
+      ]);
+      setSecretStatus(message);
+    } finally {
+      setTestingTarget(null);
+    }
   }
 
   return (
@@ -151,6 +178,38 @@ export function SettingsPanel({ config, onChange, onSave }: SettingsPanelProps) 
       <div className="status-line">
         <KeyRound size={16} />
         <span>{secretStatus || (ai.api_key_set ? "API Key 已保存到本机密钥存储" : "API Key 尚未配置")}</span>
+      </div>
+
+      <div className="api-test-panel">
+        <div className="api-test-actions">
+          <button className="tiny-button" type="button" onClick={() => handleTestConnection("text")} disabled={Boolean(testingTarget)}>
+            <Wifi size={14} />
+            测试 Text
+          </button>
+          <button className="tiny-button" type="button" onClick={() => handleTestConnection("vision")} disabled={Boolean(testingTarget)}>
+            <Wifi size={14} />
+            测试 Vision
+          </button>
+          <button className="tiny-button" type="button" onClick={() => handleTestConnection("image")} disabled={Boolean(testingTarget)}>
+            <Wifi size={14} />
+            测试 Image
+          </button>
+          <button className="tiny-button" type="button" onClick={() => handleTestConnection("all")} disabled={Boolean(testingTarget)}>
+            <Wifi size={14} />
+            全部测试
+          </button>
+        </div>
+        {testResults.length > 0 && (
+          <div className="api-test-results">
+            {testResults.map((result) => (
+              <div className={result.ok ? "api-test-result api-test-result--ok" : "api-test-result api-test-result--failed"} key={`${result.target}-${result.model}`}>
+                <strong>{result.target} · {result.model}</strong>
+                <span>{result.ok ? "成功" : "失败"}{result.status ? ` · HTTP ${result.status}` : ""}</span>
+                <p>{result.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );
