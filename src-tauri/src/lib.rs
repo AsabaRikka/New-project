@@ -403,7 +403,7 @@ fn create_task(
     }
 
     update_task_status(
-        &state,
+        state.inner(),
         &id,
         &TaskStatus::Running,
         0,
@@ -427,10 +427,38 @@ fn create_task(
         },
     );
 
+    if request.task_type == TaskType::AiAnalyze {
+        let app_handle = app_handle.clone();
+        let background_id = id.clone();
+        let background_request = request.clone();
+        let background_input_paths = input_paths.clone();
+        let background_output_dir = output_dir.clone();
+        let background_output_dir_string = output_dir_string.clone();
+        std::thread::spawn(move || {
+            run_background_task(
+                app_handle,
+                background_id,
+                background_request,
+                background_input_paths,
+                background_output_dir,
+                background_output_dir_string,
+            );
+        });
+
+        return Ok(TaskResult {
+            task_id: id,
+            status: TaskStatus::Running,
+            success_count: 0,
+            failed_count: 0,
+            output_dir: Some(output_dir_string),
+            errors: Vec::new(),
+        });
+    }
+
     let ai_context = AiTaskContext::from_state(&state)?;
     match execute_task(
         Some(&app_handle),
-        Some(&state),
+        Some(state.inner()),
         &id,
         &request,
         &input_paths,
@@ -445,7 +473,7 @@ fn create_task(
             };
             write_reports(&output_dir, &report)?;
             update_task_status(
-                &state,
+                state.inner(),
                 &id,
                 &report.status,
                 report.success_count,
@@ -487,7 +515,7 @@ fn create_task(
         }
         Err(error) => {
             update_task_status(
-                &state,
+                state.inner(),
                 &id,
                 &TaskStatus::Failed,
                 0,
@@ -521,6 +549,152 @@ fn create_task(
             })
         }
     }
+}
+
+fn run_background_task(
+    app_handle: AppHandle,
+    id: String,
+    request: TaskRequest,
+    input_paths: Vec<PathBuf>,
+    output_dir: PathBuf,
+    output_dir_string: String,
+) {
+    let state = app_handle.state::<AppState>();
+    let input_count = input_paths.len() as u32;
+    let ai_context = match AiTaskContext::from_state(&state) {
+        Ok(context) => context,
+        Err(error) => {
+            let _ = mark_background_task_failed(
+                &app_handle,
+                &state,
+                &id,
+                &request,
+                input_count,
+                &output_dir_string,
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+
+    let Some(ai_context) = ai_context else {
+        let _ = mark_background_task_failed(
+            &app_handle,
+            &state,
+            &id,
+            &request,
+            input_count,
+            &output_dir_string,
+            "请先配置 API Key",
+        );
+        return;
+    };
+
+    match execute_task(
+        Some(&app_handle),
+        Some(&state),
+        &id,
+        &request,
+        &input_paths,
+        &output_dir,
+        Some(&ai_context),
+    ) {
+        Ok(mut report) => {
+            report.status = if report.failed_count > 0 {
+                TaskStatus::Failed
+            } else {
+                TaskStatus::Completed
+            };
+            if let Err(error) = write_reports(&output_dir, &report).and_then(|_| {
+                update_task_status(
+                    &state,
+                    &id,
+                    &report.status,
+                    report.success_count,
+                    report.failed_count,
+                    Some(&report.output_dir),
+                    first_error(&report.files),
+                )
+            }) {
+                let _ = mark_background_task_failed(
+                    &app_handle,
+                    &state,
+                    &id,
+                    &request,
+                    input_count,
+                    &output_dir_string,
+                    &error.to_string(),
+                );
+                return;
+            }
+
+            emit_progress(
+                Some(&app_handle),
+                TaskProgress {
+                    task_id: id,
+                    task_type: request.task_type,
+                    status: report.status.clone(),
+                    current: input_count,
+                    total: input_count,
+                    success_count: report.success_count,
+                    failed_count: report.failed_count,
+                    current_file: None,
+                    output_dir: Some(report.output_dir.clone()),
+                    message: format!(
+                        "后台分析完成：成功 {}，失败 {}",
+                        report.success_count, report.failed_count
+                    ),
+                },
+            );
+        }
+        Err(error) => {
+            let _ = mark_background_task_failed(
+                &app_handle,
+                &state,
+                &id,
+                &request,
+                input_count,
+                &output_dir_string,
+                &error.to_string(),
+            );
+        }
+    }
+}
+
+fn mark_background_task_failed(
+    app_handle: &AppHandle,
+    state: &AppState,
+    id: &str,
+    request: &TaskRequest,
+    input_count: u32,
+    output_dir_string: &str,
+    message: &str,
+) -> AppResult<()> {
+    update_task_status(
+        state,
+        id,
+        &TaskStatus::Failed,
+        0,
+        input_count,
+        Some(output_dir_string),
+        Some(message),
+    )?;
+    emit_progress(
+        Some(app_handle),
+        TaskProgress {
+            task_id: id.to_string(),
+            task_type: request.task_type.clone(),
+            status: TaskStatus::Failed,
+            current: input_count,
+            total: input_count,
+            success_count: 0,
+            failed_count: input_count,
+            current_file: None,
+            output_dir: Some(output_dir_string.to_string()),
+            message: message.to_string(),
+        },
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -605,7 +779,7 @@ fn list_ai_results(state: tauri::State<'_, AppState>) -> AppResult<Vec<AiResultR
 }
 
 fn update_task_status(
-    state: &tauri::State<'_, AppState>,
+    state: &AppState,
     task_id: &str,
     status: &TaskStatus,
     success_count: u32,
@@ -636,7 +810,7 @@ fn update_task_status(
 
 fn execute_task(
     app_handle: Option<&AppHandle>,
-    state: Option<&tauri::State<'_, AppState>>,
+    state: Option<&AppState>,
     task_id: &str,
     request: &TaskRequest,
     input_paths: &[PathBuf],
@@ -2330,7 +2504,7 @@ fn write_ai_summary_files(report_dir: &Path, files: &[FileResult]) -> AppResult<
 }
 
 fn persist_ai_results(
-    state: &tauri::State<'_, AppState>,
+    state: &AppState,
     task_id: &str,
     model: &str,
     files: &[FileResult],

@@ -98,6 +98,10 @@ export function App() {
     void listen<TaskProgress>("task-progress", (event) => {
       setProgress(event.payload);
       setStatusMessage(event.payload.message);
+      void Promise.all([listTasks(), listAiResults()]).then(([nextTasks, nextAiResults]) => {
+        setTasks(nextTasks);
+        setAiResults(nextAiResults);
+      });
     }).then((nextUnlisten) => {
       unlisten = nextUnlisten;
     });
@@ -159,9 +163,9 @@ export function App() {
           : executionMode === "serial"
             ? await runSerialSteps(activeSteps)
             : await runParallelSteps(activeSteps);
-      setStatusMessage(
-        `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`,
-      );
+      setStatusMessage(result.status === "running"
+        ? "任务已提交到后台，处理进度会在任务中心更新"
+        : `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`);
       const [nextTasks, nextAiResults] = await Promise.all([listTasks(), listAiResults()]);
       setTasks(nextTasks);
       setAiResults(nextAiResults);
