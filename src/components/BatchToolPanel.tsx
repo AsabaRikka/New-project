@@ -49,6 +49,7 @@ const localTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "split", label: "图片切分" },
   { value: "stitch", label: "图片拼接" },
   { value: "organize", label: "文件夹整理" },
+  { value: "ai_analyze", label: "AI 广告分析" },
 ];
 
 export function BatchToolPanel({
@@ -593,6 +594,38 @@ export function BatchToolPanel({
         </div>
       )}
 
+      {taskType === "ai_analyze" && (
+        <div className="form-grid form-grid--spaced">
+          <label>
+            <span>输出语言</span>
+            <select value={params.aiLanguage} onChange={(event) => updateParams({ aiLanguage: event.target.value })}>
+              <option value="zh-CN">中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
+          </label>
+          <label>
+            <span>投放场景</span>
+            <select value={params.aiPlatform} onChange={(event) => updateParams({ aiPlatform: event.target.value })}>
+              <option value="通用广告">通用广告</option>
+              <option value="电商详情/主图">电商详情/主图</option>
+              <option value="信息流广告">信息流广告</option>
+              <option value="社媒帖子">社媒帖子</option>
+              <option value="短视频封面">短视频封面</option>
+            </select>
+          </label>
+          <NumberField label="提示词示例数" value={params.aiPromptExampleCount} onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })} />
+          <label className="form-grid__full">
+            <span>产品/业务补充</span>
+            <textarea
+              value={params.aiProductContext}
+              onChange={(event) => updateParams({ aiProductContext: event.target.value })}
+              placeholder="例如：夏季女装、价格优势、目标人群、投放渠道限制"
+            />
+          </label>
+        </div>
+      )}
+
       <div className="task-preview">
         <h3>任务预览</h3>
         <p>
@@ -670,6 +703,9 @@ function summarizeStepParams(step: TaskPipelineStep) {
   }
   if (step.task_type === "rename") {
     return `${step.params.prefix ?? "image"} · ${step.params.padding ?? 3} 位`;
+  }
+  if (step.task_type === "ai_analyze") {
+    return `${step.params.aiPlatform ?? "通用广告"} · ${step.params.aiPromptExampleCount ?? 5} 示例`;
   }
   return "默认参数";
 }

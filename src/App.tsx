@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
-import { createTask, getAppConfig, listTasks, saveAppConfig } from "./lib/api";
+import { createTask, getAppConfig, listAiResults, listTasks, saveAppConfig } from "./lib/api";
 import type {
+  AiResultRecord,
   AppConfig,
   BatchParams,
   FavoriteTask,
@@ -18,6 +19,7 @@ import type {
 import { BatchToolPanel } from "./components/BatchToolPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
+import { AiResultsPanel } from "./components/AiResultsPanel";
 
 const taskTypes: Array<{ type: TaskType; label: string; description: string }> = [
   { type: "rename", label: "图片重命名", description: "按项目规则生成批量命名任务" },
@@ -25,7 +27,7 @@ const taskTypes: Array<{ type: TaskType; label: string; description: string }> =
   { type: "compress", label: "图片压缩", description: "质量、目标大小和格式转换将在 Phase 1 实现" },
   { type: "split", label: "图片切分", description: "2x2、2x3、3x3 等网格将在 Phase 1 实现" },
   { type: "stitch", label: "图片拼接", description: "网格拼接与留白策略将在 Phase 1 实现" },
-  { type: "ai_analyze", label: "AI 广告分析", description: "OpenAI 协议层已预留，Phase 2 接入" },
+  { type: "ai_analyze", label: "AI 广告分析", description: "视觉素材分析、爆点提取、提示词提取与示例生成" },
 ];
 
 const defaultBatchParams: BatchParams = {
@@ -56,6 +58,10 @@ const defaultBatchParams: BatchParams = {
   cellWidth: 512,
   cellHeight: 512,
   background: "#ffffff",
+  aiLanguage: "zh-CN",
+  aiPlatform: "通用广告",
+  aiProductContext: "",
+  aiPromptExampleCount: 5,
 };
 
 const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
@@ -63,6 +69,7 @@ const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [aiResults, setAiResults] = useState<AiResultRecord[]>([]);
   const [selectedTaskType, setSelectedTaskType] = useState<TaskType>("rename");
   const [executionMode, setExecutionMode] = useState<TaskExecutionMode>("single");
   const [pipelineSteps, setPipelineSteps] = useState<TaskPipelineStep[]>([]);
@@ -76,9 +83,10 @@ export function App() {
   const [statusMessage, setStatusMessage] = useState("正在加载本地配置...");
 
   useEffect(() => {
-    void Promise.all([getAppConfig(), listTasks()]).then(([nextConfig, nextTasks]) => {
+    void Promise.all([getAppConfig(), listTasks(), listAiResults()]).then(([nextConfig, nextTasks, nextAiResults]) => {
       setConfig(nextConfig);
       setTasks(nextTasks);
+      setAiResults(nextAiResults);
       setFavoriteTasks(loadFavoriteTasks());
       setOutputDir(nextConfig.default_output_dir ?? "");
       setStatusMessage("Phase 1 就绪");
@@ -154,7 +162,9 @@ export function App() {
       setStatusMessage(
         `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`,
       );
-      setTasks(await listTasks());
+      const [nextTasks, nextAiResults] = await Promise.all([listTasks(), listAiResults()]);
+      setTasks(nextTasks);
+      setAiResults(nextAiResults);
       return result;
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "任务执行失败");
@@ -344,6 +354,7 @@ export function App() {
 
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
           <TaskCenter tasks={tasks} />
+          <AiResultsPanel results={aiResults} />
           <section className="panel">
             <div className="panel__header">
               <div>

@@ -199,7 +199,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 40px;
   padding: 8px 10px;
@@ -207,6 +208,11 @@ select {
   background: #f9fbfc;
   border: 1px solid #cfd8e2;
   border-radius: 8px;
+}
+
+textarea {
+  min-height: 88px;
+  resize: vertical;
 }
 
 .task-preview {
@@ -299,6 +305,64 @@ code {
 .task-list {
   display: grid;
   gap: 10px;
+}
+
+.ai-result-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-result-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  color: #314253;
+  background: #f7fafb;
+  border: 1px solid #e0e7ed;
+  border-radius: 8px;
+}
+
+.ai-result-card__header {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.ai-result-card__header div,
+.ai-result-card__path {
+  min-width: 0;
+}
+
+.ai-result-card__header strong,
+.ai-result-card__header span,
+.ai-result-card__path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-result-card p {
+  margin: 0;
+  color: #5a6a7c;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-result-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #647588;
+  font-size: 12px;
+}
+
+.ai-result-card__path {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
 }
 
 .toolbar {

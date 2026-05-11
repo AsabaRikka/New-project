@@ -121,6 +121,10 @@ export interface BatchParams {
   cellWidth: number;
   cellHeight: number;
   background: string;
+  aiLanguage: string;
+  aiPlatform: string;
+  aiProductContext: string;
+  aiPromptExampleCount: number;
 }
 
 export interface TaskRecord {
@@ -133,4 +137,23 @@ export interface TaskRecord {
   output_dir: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AiResultRecord {
+  id: string;
+  task_id: string;
+  input_path: string;
+  output_path: string | null;
+  model: string;
+  analysis_json: {
+    summary?: string;
+    hook_analysis?: {
+      core_hook?: string;
+      score?: number;
+    };
+    extracted_prompt?: string;
+    prompt_examples?: string[];
+    [key: string]: unknown;
+  };
+  created_at: string;
 }

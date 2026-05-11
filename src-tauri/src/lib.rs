@@ -4,6 +4,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
@@ -15,6 +16,7 @@ use image::{
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use thiserror::Error;
 use uuid::Uuid;
@@ -33,6 +35,8 @@ enum AppError {
     Csv(#[from] csv::Error),
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
+    #[error("http error: {0}")]
+    Http(#[from] reqwest::Error),
     #[error("unsupported image format: {0}")]
     UnsupportedFormat(String),
     #[error("invalid task params: {0}")]
@@ -92,7 +96,7 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TaskType {
     Rename,
@@ -176,6 +180,17 @@ struct TaskRecord {
     output_dir: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AiResultRecord {
+    id: String,
+    task_id: String,
+    input_path: String,
+    output_path: Option<String>,
+    model: String,
+    analysis_json: serde_json::Value,
+    created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,7 +322,16 @@ fn create_task(
         },
     );
 
-    match execute_task(Some(&app_handle), &id, &request, &input_paths, &output_dir) {
+    let ai_context = AiTaskContext::from_state(&state)?;
+    match execute_task(
+        Some(&app_handle),
+        Some(&state),
+        &id,
+        &request,
+        &input_paths,
+        &output_dir,
+        ai_context.as_ref(),
+    ) {
         Ok(mut report) => {
             report.status = if report.failed_count > 0 {
                 TaskStatus::Failed
@@ -428,6 +452,37 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     Ok(records)
 }
 
+#[tauri::command]
+fn list_ai_results(state: tauri::State<'_, AppState>) -> AppResult<Vec<AiResultRecord>> {
+    let db = state.db.lock().expect("database mutex poisoned");
+    let mut statement = db.prepare(
+        "select id, task_id, input_path, output_path, model, analysis_json, created_at
+        from ai_results
+        order by datetime(created_at) desc
+        limit 50",
+    )?;
+
+    let rows = statement.query_map([], |row| {
+        let analysis_json: String = row.get(5)?;
+        Ok(AiResultRecord {
+            id: row.get(0)?,
+            task_id: row.get(1)?,
+            input_path: row.get(2)?,
+            output_path: row.get(3)?,
+            model: row.get(4)?,
+            analysis_json: serde_json::from_str(&analysis_json).unwrap_or_else(|_| json!({})),
+            created_at: row.get(6)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+
+    Ok(records)
+}
+
 fn update_task_status(
     state: &tauri::State<'_, AppState>,
     task_id: &str,
@@ -458,10 +513,12 @@ fn update_task_status(
 
 fn execute_task(
     app_handle: Option<&AppHandle>,
+    state: Option<&tauri::State<'_, AppState>>,
     task_id: &str,
     request: &TaskRequest,
     input_paths: &[PathBuf],
     output_dir: &Path,
+    ai_context: Option<&AiTaskContext>,
 ) -> AppResult<TaskReport> {
     let success_dir = output_dir.join("success");
     let failed_dir = output_dir.join("failed");
@@ -493,12 +550,29 @@ fn execute_task(
             process_stitch(input_paths, &success_dir, &request.params, &mut tracker)?
         }
         TaskType::Organize => process_organize(input_paths, &success_dir, &mut tracker)?,
+        TaskType::AiAnalyze => process_ai_analyze(
+            input_paths,
+            &success_dir,
+            &report_dir,
+            &request.params,
+            &mut tracker,
+            ai_context.ok_or_else(|| AppError::InvalidParams("请先配置 API Key".to_string()))?,
+        )?,
         _ => {
             return Err(AppError::InvalidParams(
-                "Phase 1 only supports local image batch tasks".to_string(),
+                "当前阶段尚未支持此任务类型".to_string(),
             ));
         }
     };
+
+    if request.task_type == TaskType::AiAnalyze {
+        let state =
+            state.ok_or_else(|| AppError::InvalidParams("AI 结果需要数据库状态".to_string()))?;
+        let model = ai_context
+            .map(|context| context.config.vision_model.as_str())
+            .unwrap_or("vision");
+        persist_ai_results(state, task_id, model, &files)?;
+    }
 
     for file in files.iter_mut().filter(|file| file.status == "failed") {
         if let Some(input_path) = Path::new(&file.input_path).file_name() {
@@ -1503,6 +1577,375 @@ fn process_organize(
     Ok(results)
 }
 
+#[derive(Clone)]
+struct AiTaskContext {
+    config: AiProviderConfig,
+    api_key: String,
+}
+
+impl AiTaskContext {
+    fn from_state(state: &tauri::State<'_, AppState>) -> AppResult<Option<Self>> {
+        let config = read_config(&state.config_path)?.ai_provider;
+        if !config.api_key_set {
+            return Ok(None);
+        }
+
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
+        match entry.get_password() {
+            Ok(api_key) if !api_key.trim().is_empty() => Ok(Some(Self { config, api_key })),
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+fn process_ai_analyze(
+    input_paths: &[PathBuf],
+    output_dir: &Path,
+    report_dir: &Path,
+    params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
+    ai_context: &AiTaskContext,
+) -> AppResult<Vec<FileResult>> {
+    let sorted = sort_paths(input_paths, &read_string(params, "sortBy", "input"));
+    let language = read_string(params, "aiLanguage", "zh-CN");
+    let platform = read_string(params, "aiPlatform", "通用广告");
+    let product_context = read_string(params, "aiProductContext", "");
+    let prompt_examples = read_u32(params, "aiPromptExampleCount", 5).clamp(1, 12);
+    let mut results = Vec::new();
+
+    fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(report_dir)?;
+
+    for input in sorted {
+        tracker.start_file(&input);
+        let result = (|| -> AppResult<FileResult> {
+            let analysis = analyze_ad_creative_image(
+                &input,
+                ai_context,
+                &language,
+                &platform,
+                &product_context,
+                prompt_examples,
+            )?;
+            let original_output = unique_path(&output_dir.join(file_name(&input)));
+            fs::copy(&input, &original_output)?;
+
+            let analysis_path =
+                unique_path(&report_dir.join(format!("{}_analysis.json", file_stem(&input))));
+            fs::write(&analysis_path, serde_json::to_string_pretty(&analysis)?)?;
+
+            Ok(success_result(&input, &analysis_path))
+        })();
+        let result = result.unwrap_or_else(|error| failed_result(&input, error));
+        tracker.finish_file(&result);
+        results.push(result);
+    }
+
+    write_ai_summary_files(report_dir, &results)?;
+    Ok(results)
+}
+
+fn analyze_ad_creative_image(
+    input: &Path,
+    ai_context: &AiTaskContext,
+    language: &str,
+    platform: &str,
+    product_context: &str,
+    prompt_examples: u32,
+) -> AppResult<serde_json::Value> {
+    let image_data_url = image_data_url(input)?;
+    let prompt =
+        build_ad_analysis_prompt(input, language, platform, product_context, prompt_examples);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            ai_context.config.timeout_seconds.max(10),
+        ))
+        .build()?;
+
+    match request_responses_analysis(&client, ai_context, &prompt, &image_data_url) {
+        Ok(value) => Ok(value),
+        Err(_) => request_chat_analysis(&client, ai_context, &prompt, &image_data_url),
+    }
+}
+
+fn request_responses_analysis(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+) -> AppResult<serde_json::Value> {
+    let url = format!(
+        "{}/responses",
+        ai_context.config.base_url.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": ai_context.config.vision_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。"
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": prompt },
+                    { "type": "input_image", "image_url": image_data_url }
+                ]
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "ad_creative_analysis",
+                "strict": true,
+                "schema": ad_analysis_schema()
+            }
+        }
+    });
+    let response: serde_json::Value = client
+        .post(url)
+        .bearer_auth(&ai_context.api_key)
+        .json(&body)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    parse_model_json_output(&response)
+}
+
+fn request_chat_analysis(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+) -> AppResult<serde_json::Value> {
+    let url = format!(
+        "{}/chat/completions",
+        ai_context.config.base_url.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": ai_context.config.vision_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是资深广告素材策略师。只输出 JSON，不要输出 Markdown。"
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": image_data_url } }
+                ]
+            }
+        ],
+        "response_format": { "type": "json_object" }
+    });
+    let response: serde_json::Value = client
+        .post(url)
+        .bearer_auth(&ai_context.api_key)
+        .json(&body)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    parse_model_json_output(&response)
+}
+
+fn build_ad_analysis_prompt(
+    input: &Path,
+    language: &str,
+    platform: &str,
+    product_context: &str,
+    prompt_examples: u32,
+) -> String {
+    format!(
+        "请分析这张广告图片素材。输出语言：{language}。平台/投放场景：{platform}。产品或业务补充：{product_context}。文件名：{}。请给出视觉主体、卖点、情绪、场景、受众、转化点、爆点分析、可复用提示词、{} 个提示词示例、风险提示和优化建议。",
+        file_name(input),
+        prompt_examples
+    )
+}
+
+fn ad_analysis_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "summary",
+            "visual_subjects",
+            "selling_points",
+            "emotions",
+            "scene",
+            "target_audience",
+            "conversion_points",
+            "hook_analysis",
+            "extracted_prompt",
+            "prompt_examples",
+            "risks",
+            "optimization_suggestions"
+        ],
+        "properties": {
+            "summary": { "type": "string" },
+            "visual_subjects": { "type": "array", "items": { "type": "string" } },
+            "selling_points": { "type": "array", "items": { "type": "string" } },
+            "emotions": { "type": "array", "items": { "type": "string" } },
+            "scene": { "type": "string" },
+            "target_audience": { "type": "array", "items": { "type": "string" } },
+            "conversion_points": { "type": "array", "items": { "type": "string" } },
+            "hook_analysis": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["core_hook", "why_it_works", "evidence", "score"],
+                "properties": {
+                    "core_hook": { "type": "string" },
+                    "why_it_works": { "type": "string" },
+                    "evidence": { "type": "array", "items": { "type": "string" } },
+                    "score": { "type": "number" }
+                }
+            },
+            "extracted_prompt": { "type": "string" },
+            "prompt_examples": { "type": "array", "items": { "type": "string" } },
+            "risks": { "type": "array", "items": { "type": "string" } },
+            "optimization_suggestions": { "type": "array", "items": { "type": "string" } }
+        }
+    })
+}
+
+fn parse_model_json_output(response: &serde_json::Value) -> AppResult<serde_json::Value> {
+    if let Some(text) = response.get("output_text").and_then(|value| value.as_str()) {
+        return parse_json_text(text);
+    }
+
+    if let Some(content) = response
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+    {
+        return parse_json_text(content);
+    }
+
+    if let Some(outputs) = response.get("output").and_then(|value| value.as_array()) {
+        for output in outputs {
+            if let Some(contents) = output.get("content").and_then(|value| value.as_array()) {
+                for content in contents {
+                    if let Some(text) = content.get("text").and_then(|value| value.as_str()) {
+                        return parse_json_text(text);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(AppError::InvalidParams(
+        "AI 响应中没有可解析的 JSON".to_string(),
+    ))
+}
+
+fn parse_json_text(text: &str) -> AppResult<serde_json::Value> {
+    let trimmed = text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    Ok(serde_json::from_str(trimmed)?)
+}
+
+fn image_data_url(input: &Path) -> AppResult<String> {
+    let bytes = fs::read(input)?;
+    let mime = mime_for_image(input)?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+fn mime_for_image(input: &Path) -> AppResult<&'static str> {
+    match normalized_extension(input).as_deref() {
+        Some("jpg") | Some("jpeg") => Ok("image/jpeg"),
+        Some("png") => Ok("image/png"),
+        Some("webp") => Ok("image/webp"),
+        _ => Err(AppError::UnsupportedFormat(file_name(input))),
+    }
+}
+
+fn write_ai_summary_files(report_dir: &Path, files: &[FileResult]) -> AppResult<()> {
+    let mut analyses = Vec::new();
+    for file in files.iter().filter(|file| file.status == "success") {
+        if let Some(output_path) = &file.output_path {
+            let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(output_path)?)?;
+            analyses.push(json!({
+                "input_path": file.input_path,
+                "analysis": value
+            }));
+        }
+    }
+    fs::write(
+        report_dir.join("ai_analysis_summary.json"),
+        serde_json::to_string_pretty(&analyses)?,
+    )?;
+
+    let mut writer = csv::Writer::from_path(report_dir.join("ai_analysis_summary.csv"))?;
+    writer.write_record([
+        "input_path",
+        "summary",
+        "core_hook",
+        "score",
+        "extracted_prompt",
+    ])?;
+    for item in analyses {
+        let analysis = &item["analysis"];
+        writer.write_record([
+            item["input_path"].as_str().unwrap_or(""),
+            analysis["summary"].as_str().unwrap_or(""),
+            analysis["hook_analysis"]["core_hook"]
+                .as_str()
+                .unwrap_or(""),
+            &analysis["hook_analysis"]["score"].to_string(),
+            analysis["extracted_prompt"].as_str().unwrap_or(""),
+        ])?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn persist_ai_results(
+    state: &tauri::State<'_, AppState>,
+    task_id: &str,
+    model: &str,
+    files: &[FileResult],
+) -> AppResult<()> {
+    let db = state.db.lock().expect("database mutex poisoned");
+    let now = Utc::now().to_rfc3339();
+    for file in files.iter().filter(|file| file.status == "success") {
+        let Some(output_path) = &file.output_path else {
+            continue;
+        };
+        let analysis_json = fs::read_to_string(output_path)?;
+        let id = Uuid::new_v4().to_string();
+        db.execute(
+            "insert into ai_results (
+                id, task_id, input_path, output_path, model, analysis_json, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                task_id,
+                file.input_path,
+                output_path,
+                model,
+                analysis_json,
+                now
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn expand_input_paths(inputs: &[String], recursive: bool) -> AppResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
@@ -2037,7 +2480,8 @@ pub fn run() {
             save_api_key,
             clear_api_key,
             create_task,
-            list_tasks
+            list_tasks,
+            list_ai_results
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2093,6 +2537,19 @@ fn migrate_database(db: &Connection) -> AppResult<()> {
         );
 
         create index if not exists idx_tasks_created_at on tasks(created_at);
+
+        create table if not exists ai_results (
+            id text primary key,
+            task_id text not null,
+            input_path text not null,
+            output_path text,
+            model text not null,
+            analysis_json text not null,
+            created_at text not null
+        );
+
+        create index if not exists idx_ai_results_created_at on ai_results(created_at);
+        create index if not exists idx_ai_results_task_id on ai_results(task_id);
         ",
     )?;
 
@@ -2392,6 +2849,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ai_results_table_persists_analysis_json() {
+        let db = Connection::open_in_memory().expect("db");
+        migrate_database(&db).expect("migrate");
+        let analysis = serde_json::json!({
+            "summary": "素材主体清晰",
+            "hook_analysis": { "core_hook": "限时优惠", "score": 8.2 }
+        });
+        db.execute(
+            "insert into ai_results (
+                id, task_id, input_path, output_path, model, analysis_json, created_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "ai-result-1",
+                "task-1",
+                "/tmp/input.png",
+                "/tmp/report.json",
+                "gpt-4.1-mini",
+                serde_json::to_string(&analysis).expect("analysis json"),
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .expect("insert ai result");
+
+        let stored: String = db
+            .query_row(
+                "select analysis_json from ai_results where id = ?1",
+                params!["ai-result-1"],
+                |row| row.get(0),
+            )
+            .expect("stored analysis");
+        let parsed: serde_json::Value = serde_json::from_str(&stored).expect("parse stored");
+        assert_eq!(parsed["hook_analysis"]["core_hook"], "限时优惠");
+    }
+
     fn run_test_task(
         task_type: TaskType,
         inputs: &[String],
@@ -2414,8 +2906,16 @@ mod tests {
         )
         .expect("inputs");
         let output_dir = resolve_task_output_dir(&request).expect("output dir");
-        let report =
-            execute_task(None, "test-task", &request, &input_paths, &output_dir).expect("task");
+        let report = execute_task(
+            None,
+            None,
+            "test-task",
+            &request,
+            &input_paths,
+            &output_dir,
+            None,
+        )
+        .expect("task");
         write_reports(&output_dir, &report).expect("reports");
         report
     }

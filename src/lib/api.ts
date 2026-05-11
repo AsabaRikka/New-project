@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, TaskRecord, TaskRequest, TaskResult } from "./types";
+import type { AiResultRecord, AppConfig, TaskRecord, TaskRequest, TaskResult } from "./types";
 
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 
@@ -71,6 +71,14 @@ export async function listTasks(): Promise<TaskRecord[]> {
   }
 
   return invoke<TaskRecord[]>("list_tasks");
+}
+
+export async function listAiResults(): Promise<AiResultRecord[]> {
+  if (!isTauriRuntime) {
+    return [];
+  }
+
+  return invoke<AiResultRecord[]>("list_ai_results");
 }
 
 export async function createTask(request: TaskRequest): Promise<TaskResult> {
