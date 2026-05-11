@@ -48,6 +48,14 @@ export interface TaskRequest<TParams = Record<string, unknown>> {
   };
 }
 
+export type TaskExecutionMode = "single" | "serial" | "parallel";
+
+export interface TaskPipelineStep {
+  id: string;
+  task_type: TaskType;
+  params: Record<string, unknown>;
+}
+
 export interface TaskResult {
   task_id: string;
   status: TaskStatus;

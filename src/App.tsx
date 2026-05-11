@@ -3,7 +3,17 @@ import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import { createTask, getAppConfig, listTasks, saveAppConfig } from "./lib/api";
-import type { AppConfig, BatchParams, TaskProgress, TaskRecord, TaskType } from "./lib/types";
+import type {
+  AppConfig,
+  BatchParams,
+  TaskExecutionMode,
+  TaskPipelineStep,
+  TaskProgress,
+  TaskRecord,
+  TaskResult,
+  TaskStatus,
+  TaskType,
+} from "./lib/types";
 import { BatchToolPanel } from "./components/BatchToolPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
@@ -51,6 +61,8 @@ export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskType, setSelectedTaskType] = useState<TaskType>("rename");
+  const [executionMode, setExecutionMode] = useState<TaskExecutionMode>("single");
+  const [pipelineSteps, setPipelineSteps] = useState<TaskPipelineStep[]>([]);
   const [projectName, setProjectName] = useState("default-project");
   const [outputDir, setOutputDir] = useState("");
   const [inputs, setInputs] = useState<string[]>([]);
@@ -102,23 +114,38 @@ export function App() {
       return null;
     }
 
+    const activeSteps =
+      executionMode === "single"
+        ? [
+            {
+              id: "single",
+              task_type: selectedTaskType,
+              params: sanitizeParams(batchParams),
+            },
+          ]
+        : pipelineSteps;
+
+    if (activeSteps.length === 0) {
+      setStatusMessage("请先添加至少一个任务步骤");
+      return null;
+    }
+
     setIsRunning(true);
     setProgress(null);
-    setStatusMessage("正在处理图片...");
+    setStatusMessage(
+      executionMode === "serial"
+        ? "正在串联处理图片..."
+        : executionMode === "parallel"
+          ? "正在并联处理图片..."
+          : "正在处理图片...",
+    );
     try {
-      const params = Object.fromEntries(
-        Object.entries(batchParams).filter(([, value]) => value !== null && value !== ""),
-      );
-      const result = await createTask({
-        task_type: selectedTaskType,
-        inputs,
-        params,
-        output_rule: {
-          project_name: projectName,
-          output_dir: outputDir || null,
-          keep_originals: true,
-        },
-      });
+      const result =
+        executionMode === "single"
+          ? await runTaskStep(activeSteps[0], inputs, projectName)
+          : executionMode === "serial"
+            ? await runSerialSteps(activeSteps)
+            : await runParallelSteps(activeSteps);
       setStatusMessage(
         `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`,
       );
@@ -130,6 +157,44 @@ export function App() {
     } finally {
       setIsRunning(false);
     }
+  }
+
+  async function runTaskStep(step: TaskPipelineStep, stepInputs: string[], stepProjectName: string) {
+    return createTask({
+      task_type: step.task_type,
+      inputs: stepInputs,
+      params: step.params,
+      output_rule: {
+        project_name: stepProjectName,
+        output_dir: outputDir || null,
+        keep_originals: true,
+      },
+    });
+  }
+
+  async function runSerialSteps(steps: TaskPipelineStep[]) {
+    let currentInputs = inputs;
+    let lastResult = await runTaskStep(steps[0], currentInputs, `${projectName}-01-${steps[0].task_type}`);
+    let summary = createTaskSummary(lastResult);
+    for (let index = 1; index < steps.length; index += 1) {
+      if (!lastResult.output_dir || lastResult.success_count === 0) {
+        break;
+      }
+      currentInputs = [`${lastResult.output_dir}/success`];
+      const step = steps[index];
+      lastResult = await runTaskStep(step, currentInputs, `${projectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`);
+      summary = mergeTaskSummary(summary, lastResult);
+    }
+    return { ...summary, task_id: lastResult.task_id, output_dir: lastResult.output_dir ?? summary.output_dir };
+  }
+
+  async function runParallelSteps(steps: TaskPipelineStep[]) {
+    const results = await Promise.all(
+      steps.map((step, index) =>
+        runTaskStep(step, inputs, `${projectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`),
+      ),
+    );
+    return results.reduce(mergeTaskSummary, createEmptyTaskSummary(results));
   }
 
   async function handleCreatePreviewTask() {
@@ -205,6 +270,8 @@ export function App() {
             projectName={projectName}
             outputDir={outputDir}
             taskType={selectedTaskType}
+            executionMode={executionMode}
+            pipelineSteps={pipelineSteps}
             inputs={inputs}
             params={batchParams}
             isRunning={isRunning}
@@ -212,6 +279,8 @@ export function App() {
             onProjectNameChange={setProjectName}
             onOutputDirChange={setOutputDir}
             onTaskTypeChange={setSelectedTaskType}
+            onExecutionModeChange={setExecutionMode}
+            onPipelineStepsChange={setPipelineSteps}
             onInputsChange={setInputs}
             onParamsChange={setBatchParams}
             onRun={handleRunBatchTask}
@@ -230,7 +299,7 @@ export function App() {
               <h3>{selectedTask.label}</h3>
               <p>{selectedTask.description}</p>
               <code>
-                TaskRequest(type="{selectedTask.type}", inputs={inputs.length}, project="{projectName}")
+                Run(mode="{executionMode}", steps={executionMode === "single" ? 1 : pipelineSteps.length}, inputs={inputs.length})
               </code>
             </div>
             <div className="task-preview">
@@ -252,4 +321,56 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function sanitizeParams(params: BatchParams) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== null && value !== ""),
+  );
+}
+
+function createEmptyTaskSummary(results: TaskResult[]): TaskResult {
+  return {
+    task_id: results[0]?.task_id ?? "",
+    status: results.some((result) => result.failed_count > 0) ? "failed" : "completed",
+    success_count: 0,
+    failed_count: 0,
+    output_dir: results[0]?.output_dir ?? null,
+    errors: [],
+  };
+}
+
+function createTaskSummary(result: TaskResult): TaskResult {
+  return {
+    task_id: result.task_id,
+    status: result.status,
+    success_count: result.success_count,
+    failed_count: result.failed_count,
+    output_dir: result.output_dir,
+    errors: result.errors,
+  };
+}
+
+function mergeTaskSummary(summary: TaskResult, result: TaskResult): TaskResult {
+  return {
+    task_id: result.task_id,
+    status: mergeTaskStatus(summary.status, result.status),
+    success_count: summary.success_count + result.success_count,
+    failed_count: summary.failed_count + result.failed_count,
+    output_dir: result.output_dir ?? summary.output_dir,
+    errors: [...summary.errors, ...result.errors],
+  };
+}
+
+function mergeTaskStatus(left: TaskStatus, right: TaskStatus): TaskStatus {
+  if (left === "failed" || right === "failed") {
+    return "failed";
+  }
+  if (left === "cancelled" || right === "cancelled") {
+    return "cancelled";
+  }
+  if (left === "running" || right === "running") {
+    return "running";
+  }
+  return right;
 }

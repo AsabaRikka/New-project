@@ -4,6 +4,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  CopyPlus,
   FolderOpen,
   Grid2X2,
   Images,
@@ -13,12 +14,14 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { BatchParams, TaskProgress, TaskResult, TaskType } from "../lib/types";
+import type { BatchParams, TaskExecutionMode, TaskPipelineStep, TaskProgress, TaskResult, TaskType } from "../lib/types";
 
 interface BatchToolPanelProps {
   projectName: string;
   outputDir: string;
   taskType: TaskType;
+  executionMode: TaskExecutionMode;
+  pipelineSteps: TaskPipelineStep[];
   inputs: string[];
   params: BatchParams;
   isRunning: boolean;
@@ -26,6 +29,8 @@ interface BatchToolPanelProps {
   onProjectNameChange: (value: string) => void;
   onOutputDirChange: (value: string) => void;
   onTaskTypeChange: (value: TaskType) => void;
+  onExecutionModeChange: (value: TaskExecutionMode) => void;
+  onPipelineStepsChange: (value: TaskPipelineStep[]) => void;
   onInputsChange: (inputs: string[]) => void;
   onParamsChange: (params: BatchParams) => void;
   onRun: () => Promise<TaskResult | null>;
@@ -45,6 +50,8 @@ export function BatchToolPanel({
   projectName,
   outputDir,
   taskType,
+  executionMode,
+  pipelineSteps,
   inputs,
   params,
   isRunning,
@@ -52,6 +59,8 @@ export function BatchToolPanel({
   onProjectNameChange,
   onOutputDirChange,
   onTaskTypeChange,
+  onExecutionModeChange,
+  onPipelineStepsChange,
   onInputsChange,
   onParamsChange,
   onRun,
@@ -131,6 +140,33 @@ export function BatchToolPanel({
     return imageExtensions.has(extension);
   }
 
+  function addPipelineStep() {
+    onPipelineStepsChange([
+      ...pipelineSteps,
+      {
+        id: `${Date.now()}-${taskType}`,
+        task_type: taskType,
+        params: sanitizeParams(params),
+      },
+    ]);
+  }
+
+  function removePipelineStep(id: string) {
+    onPipelineStepsChange(pipelineSteps.filter((step) => step.id !== id));
+  }
+
+  function movePipelineStep(id: string, direction: -1 | 1) {
+    const index = pipelineSteps.findIndex((step) => step.id === id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= pipelineSteps.length) {
+      return;
+    }
+    const next = [...pipelineSteps];
+    const [step] = next.splice(index, 1);
+    next.splice(nextIndex, 0, step);
+    onPipelineStepsChange(next);
+  }
+
   return (
     <section className="panel panel--primary">
       <div className="panel__header">
@@ -155,6 +191,68 @@ export function BatchToolPanel({
             ))}
           </select>
         </label>
+      </div>
+
+      <div className="run-mode-panel">
+        <div className="segmented-control" aria-label="任务运行方式">
+          <button
+            className={executionMode === "single" ? "segmented-control__item segmented-control__item--active" : "segmented-control__item"}
+            type="button"
+            onClick={() => onExecutionModeChange("single")}
+          >
+            单任务
+          </button>
+          <button
+            className={executionMode === "serial" ? "segmented-control__item segmented-control__item--active" : "segmented-control__item"}
+            type="button"
+            onClick={() => onExecutionModeChange("serial")}
+          >
+            串联
+          </button>
+          <button
+            className={executionMode === "parallel" ? "segmented-control__item segmented-control__item--active" : "segmented-control__item"}
+            type="button"
+            onClick={() => onExecutionModeChange("parallel")}
+          >
+            并联
+          </button>
+        </div>
+
+        {executionMode !== "single" && (
+          <div className="pipeline-panel">
+            <div className="pipeline-toolbar">
+              <button className="secondary-button" type="button" onClick={addPipelineStep}>
+                <CopyPlus size={16} />
+                添加当前任务
+              </button>
+              <span>{executionMode === "serial" ? "按列表顺序依次处理" : "同一批输入同时处理"}</span>
+            </div>
+            <div className="pipeline-list">
+              {pipelineSteps.length === 0 ? (
+                <p className="empty">先选择任务类型和参数，再添加到任务流</p>
+              ) : (
+                pipelineSteps.map((step, index) => (
+                  <div className="pipeline-step" key={step.id}>
+                    <span className="pipeline-step__index">{index + 1}</span>
+                    <strong>{taskLabel(step.task_type)}</strong>
+                    <span>{summarizeStepParams(step)}</span>
+                    <div className="pipeline-step__actions">
+                      <button className="icon-button icon-button--small" type="button" onClick={() => movePipelineStep(step.id, -1)} disabled={index === 0} aria-label="上移任务">
+                        <ChevronDown size={14} className="rotate-up" />
+                      </button>
+                      <button className="icon-button icon-button--small" type="button" onClick={() => movePipelineStep(step.id, 1)} disabled={index === pipelineSteps.length - 1} aria-label="下移任务">
+                        <ChevronDown size={14} />
+                      </button>
+                      <button className="icon-button icon-button--small" type="button" onClick={() => removePipelineStep(step.id)} aria-label="移除任务">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="toolbar">
@@ -440,8 +538,10 @@ export function BatchToolPanel({
       <div className="task-preview">
         <h3>任务预览</h3>
         <p>
-          {localTaskTypes.find((task) => task.value === taskType)?.label} · 输入 {inputs.length} 项 · 输出到{" "}
-          {outputDir || "默认 outputs 目录"}
+          {executionMode === "single"
+            ? taskLabel(taskType)
+            : `${executionMode === "serial" ? "串联" : "并联"} ${pipelineSteps.length} 个步骤`}{" "}
+          · 输入 {inputs.length} 项 · 输出到 {outputDir || "默认 outputs 目录"}
         </p>
       </div>
 
@@ -466,9 +566,9 @@ export function BatchToolPanel({
         </div>
       )}
 
-      <button className="primary-button" type="button" disabled={isRunning || inputs.length === 0} onClick={onRun}>
+      <button className="primary-button" type="button" disabled={isRunning || inputs.length === 0 || (executionMode !== "single" && pipelineSteps.length === 0)} onClick={onRun}>
         <Play size={16} />
-        {isRunning ? "处理中..." : "运行批处理"}
+        {isRunning ? "处理中..." : executionMode === "serial" ? "运行串联任务" : executionMode === "parallel" ? "运行并联任务" : "运行批处理"}
       </button>
     </section>
   );
@@ -488,6 +588,32 @@ function toAssetUrl(path: string) {
   }
 
   return `file://${path}`;
+}
+
+function sanitizeParams(params: BatchParams) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== null && value !== ""),
+  );
+}
+
+function taskLabel(taskType: TaskType) {
+  return localTaskTypes.find((task) => task.value === taskType)?.label ?? taskType;
+}
+
+function summarizeStepParams(step: TaskPipelineStep) {
+  if (step.task_type === "resize") {
+    return `${step.params.resizeMode ?? "width"} ${step.params.width ?? ""}x${step.params.height ?? ""}`;
+  }
+  if (step.task_type === "compress" || step.task_type === "convert") {
+    return `${step.params.outputFormat ?? "original"} · 质量 ${step.params.quality ?? 82}`;
+  }
+  if (step.task_type === "split" || step.task_type === "stitch") {
+    return `${step.params.rows ?? 3}x${step.params.cols ?? 3}`;
+  }
+  if (step.task_type === "rename") {
+    return `${step.params.prefix ?? "image"} · ${step.params.padding ?? 3} 位`;
+  }
+  return "默认参数";
 }
 
 function NumberField({
