@@ -234,6 +234,7 @@ struct TaskProgress {
 struct AppState {
     db: Mutex<Connection>,
     config_path: PathBuf,
+    api_key_path: PathBuf,
 }
 
 const KEYRING_SERVICE: &str = "com.adcreativestudio.desktop";
@@ -242,11 +243,15 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
 #[tauri::command]
 fn get_app_config(state: tauri::State<'_, AppState>) -> AppResult<AppConfig> {
-    read_config(&state.config_path)
+    sync_api_key_state(&state)
 }
 
 #[tauri::command]
-fn save_app_config(config: AppConfig, state: tauri::State<'_, AppState>) -> AppResult<AppConfig> {
+fn save_app_config(
+    mut config: AppConfig,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<AppConfig> {
+    config.ai_provider.api_key_set = read_saved_api_key(&state.api_key_path)?.is_some();
     fs::write(&state.config_path, serde_json::to_string_pretty(&config)?)?;
     Ok(config)
 }
@@ -258,11 +263,13 @@ fn save_api_key(api_key: String, state: tauri::State<'_, AppState>) -> AppResult
         return Ok(false);
     }
 
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
-    entry.set_password(trimmed)?;
+    fs::write(&state.api_key_path, trimmed)?;
+    let keyring_saved = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .and_then(|entry| entry.set_password(trimmed))
+        .is_ok();
 
     let mut config = read_config(&state.config_path)?;
-    config.ai_provider.api_key_set = true;
+    config.ai_provider.api_key_set = keyring_saved || local_api_key_exists(&state.api_key_path);
     fs::write(&state.config_path, serde_json::to_string_pretty(&config)?)?;
 
     Ok(true)
@@ -275,12 +282,58 @@ fn clear_api_key(state: tauri::State<'_, AppState>) -> AppResult<bool> {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(error) => return Err(error.into()),
     }
+    match fs::remove_file(&state.api_key_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
 
     let mut config = read_config(&state.config_path)?;
     config.ai_provider.api_key_set = false;
     fs::write(&state.config_path, serde_json::to_string_pretty(&config)?)?;
 
     Ok(true)
+}
+
+fn sync_api_key_state(state: &tauri::State<'_, AppState>) -> AppResult<AppConfig> {
+    let mut config = read_config(&state.config_path)?;
+    let api_key_set = read_saved_api_key(&state.api_key_path)?.is_some();
+    if config.ai_provider.api_key_set != api_key_set {
+        config.ai_provider.api_key_set = api_key_set;
+        fs::write(&state.config_path, serde_json::to_string_pretty(&config)?)?;
+    }
+    Ok(config)
+}
+
+fn read_saved_api_key(api_key_path: &Path) -> AppResult<Option<String>> {
+    match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => match entry.get_password() {
+            Ok(api_key) if !api_key.trim().is_empty() => {
+                return Ok(Some(api_key.trim().to_string()));
+            }
+            Ok(_) | Err(keyring::Error::NoEntry) | Err(keyring::Error::NoStorageAccess(_)) => {}
+            Err(error) => return Err(error.into()),
+        },
+        Err(keyring::Error::NoStorageAccess(_)) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    if !api_key_path.exists() {
+        return Ok(None);
+    }
+    let api_key = fs::read_to_string(api_key_path)?;
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn local_api_key_exists(api_key_path: &Path) -> bool {
+    fs::read_to_string(api_key_path)
+        .map(|api_key| !api_key.trim().is_empty())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -1663,15 +1716,10 @@ struct AiTaskContext {
 impl AiTaskContext {
     fn from_state(state: &tauri::State<'_, AppState>) -> AppResult<Option<Self>> {
         let config = read_config(&state.config_path)?.ai_provider;
-        if !config.api_key_set {
-            return Ok(None);
-        }
 
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
-        match entry.get_password() {
-            Ok(api_key) if !api_key.trim().is_empty() => Ok(Some(Self { config, api_key })),
-            Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error.into()),
+        match read_saved_api_key(&state.api_key_path)? {
+            Some(api_key) => Ok(Some(Self { config, api_key })),
+            None => Ok(None),
         }
     }
 }
@@ -2877,6 +2925,7 @@ fn create_app_state(app_handle: &AppHandle) -> AppResult<AppState> {
     Ok(AppState {
         db: Mutex::new(db),
         config_path,
+        api_key_path: data_dir.join("api-key.local"),
     })
 }
 
