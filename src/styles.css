@@ -122,6 +122,9 @@ input[type="checkbox"] {
 }
 
 .topbar h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 30px;
 }
 

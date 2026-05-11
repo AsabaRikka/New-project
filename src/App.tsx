@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
+import type { AiProviderDescriptor } from "./lib/aiProvider";
 import { createTask, getAppConfig, listAiResults, listTasks, saveAppConfig } from "./lib/api";
 import type {
   AiResultRecord,
@@ -16,7 +17,7 @@ import type {
   TaskStatus,
   TaskType,
 } from "./lib/types";
-import { BatchToolPanel } from "./components/BatchToolPanel";
+import { aiTaskTypes, batchTaskTypes, BatchToolPanel } from "./components/BatchToolPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
 import { AiResultsPanel } from "./components/AiResultsPanel";
@@ -27,6 +28,7 @@ const taskTypes: Array<{ type: TaskType; label: string; description: string }> =
   { type: "compress", label: "图片压缩", description: "质量、目标大小和格式转换将在 Phase 1 实现" },
   { type: "split", label: "图片切分", description: "2x2、2x3、3x3 等网格将在 Phase 1 实现" },
   { type: "stitch", label: "图片拼接", description: "网格拼接与留白策略将在 Phase 1 实现" },
+  { type: "organize", label: "文件夹整理", description: "把处理后的图片按任务结果归档整理" },
   { type: "ai_analyze", label: "AI 广告分析", description: "视觉素材分析、爆点提取、提示词提取与示例生成" },
 ];
 
@@ -65,6 +67,23 @@ const defaultBatchParams: BatchParams = {
 };
 
 const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
+type AppView = "project" | "batch" | "ai" | "chat" | "settings";
+
+const appViews: Array<{ id: AppView; label: string; icon: typeof FolderKanban }> = [
+  { id: "project", label: "项目骨架", icon: FolderKanban },
+  { id: "batch", label: "批量工具", icon: Layers3 },
+  { id: "ai", label: "AI 协议层", icon: WandSparkles },
+  { id: "chat", label: "对话模式", icon: Bot },
+  { id: "settings", label: "设置", icon: Settings },
+];
+
+const viewMeta: Record<AppView, { eyebrow: string; title: string; icon: typeof FolderKanban }> = {
+  project: { eyebrow: "Desktop App Foundation", title: "项目骨架", icon: FolderKanban },
+  batch: { eyebrow: "Phase 1", title: "图片批量工具", icon: Layers3 },
+  ai: { eyebrow: "Phase 2", title: "AI 协议层", icon: WandSparkles },
+  chat: { eyebrow: "Phase 3", title: "对话模式", icon: Bot },
+  settings: { eyebrow: "Phase 0", title: "设置", icon: Settings },
+};
 
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -81,6 +100,7 @@ export function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [statusMessage, setStatusMessage] = useState("正在加载本地配置...");
+  const [activeView, setActiveView] = useState<AppView>("batch");
 
   useEffect(() => {
     void Promise.all([getAppConfig(), listTasks(), listAiResults()]).then(([nextConfig, nextTasks, nextAiResults]) => {
@@ -111,10 +131,20 @@ export function App() {
     };
   }, []);
 
+  const selectedBatchTaskType = batchTaskTypes.some((task) => task.value === selectedTaskType) ? selectedTaskType : "rename";
   const selectedTask = useMemo(
-    () => taskTypes.find((task) => task.type === selectedTaskType) ?? taskTypes[0],
-    [selectedTaskType],
+    () => taskTypes.find((task) => task.type === selectedBatchTaskType) ?? taskTypes[0],
+    [selectedBatchTaskType],
   );
+  const activeViewMeta = viewMeta[activeView];
+  const ActiveIcon = activeViewMeta.icon;
+
+  function handleViewChange(view: AppView) {
+    setActiveView(view);
+    if (view === "batch" && !batchTaskTypes.some((task) => task.value === selectedTaskType)) {
+      setSelectedTaskType("rename");
+    }
+  }
 
   async function handleSaveConfig() {
     if (!config) {
@@ -127,20 +157,34 @@ export function App() {
   }
 
   async function handleRunBatchTask() {
+    return runTaskRequest(selectedBatchTaskType, executionMode, pipelineSteps, projectName, "正在处理图片...");
+  }
+
+  async function handleRunAiTask() {
+    return runTaskRequest("ai_analyze", "single", [], `${projectName}-ai`, "正在提交 AI 分析...");
+  }
+
+  async function runTaskRequest(
+    taskType: TaskType,
+    mode: TaskExecutionMode,
+    steps: TaskPipelineStep[],
+    baseProjectName: string,
+    runningMessage: string,
+  ) {
     if (!config) {
       return null;
     }
 
     const activeSteps =
-      executionMode === "single"
+      mode === "single"
         ? [
             {
               id: "single",
-              task_type: selectedTaskType,
+              task_type: taskType,
               params: sanitizeParams(batchParams),
             },
           ]
-        : pipelineSteps;
+        : steps;
 
     if (activeSteps.length === 0) {
       setStatusMessage("请先添加至少一个任务步骤");
@@ -149,20 +193,14 @@ export function App() {
 
     setIsRunning(true);
     setProgress(null);
-    setStatusMessage(
-      executionMode === "serial"
-        ? "正在串联处理图片..."
-        : executionMode === "parallel"
-          ? "正在并联处理图片..."
-          : "正在处理图片...",
-    );
+    setStatusMessage(mode === "single" ? runningMessage : mode === "serial" ? "正在串联处理图片..." : "正在并联处理图片...");
     try {
       const result =
-        executionMode === "single"
-          ? await runTaskStep(activeSteps[0], inputs, projectName)
-          : executionMode === "serial"
-            ? await runSerialSteps(activeSteps)
-            : await runParallelSteps(activeSteps);
+        mode === "single"
+          ? await runTaskStep(activeSteps[0], inputs, baseProjectName)
+          : mode === "serial"
+            ? await runSerialSteps(activeSteps, baseProjectName)
+            : await runParallelSteps(activeSteps, baseProjectName);
       setStatusMessage(result.status === "running"
         ? "任务已提交到后台，处理进度会在任务中心更新"
         : `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`);
@@ -191,9 +229,9 @@ export function App() {
     });
   }
 
-  async function runSerialSteps(steps: TaskPipelineStep[]) {
+  async function runSerialSteps(steps: TaskPipelineStep[], baseProjectName = projectName) {
     let currentInputs = inputs;
-    let lastResult = await runTaskStep(steps[0], currentInputs, `${projectName}-01-${steps[0].task_type}`);
+    let lastResult = await runTaskStep(steps[0], currentInputs, `${baseProjectName}-01-${steps[0].task_type}`);
     let summary = createTaskSummary(lastResult);
     for (let index = 1; index < steps.length; index += 1) {
       if (!lastResult.output_dir || lastResult.success_count === 0) {
@@ -201,16 +239,16 @@ export function App() {
       }
       currentInputs = [`${lastResult.output_dir}/success`];
       const step = steps[index];
-      lastResult = await runTaskStep(step, currentInputs, `${projectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`);
+      lastResult = await runTaskStep(step, currentInputs, `${baseProjectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`);
       summary = mergeTaskSummary(summary, lastResult);
     }
     return { ...summary, task_id: lastResult.task_id, output_dir: lastResult.output_dir ?? summary.output_dir };
   }
 
-  async function runParallelSteps(steps: TaskPipelineStep[]) {
+  async function runParallelSteps(steps: TaskPipelineStep[], baseProjectName = projectName) {
     const results = await Promise.all(
       steps.map((step, index) =>
-        runTaskStep(step, inputs, `${projectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`),
+        runTaskStep(step, inputs, `${baseProjectName}-${String(index + 1).padStart(2, "0")}-${step.task_type}`),
       ),
     );
     return results.reduce(mergeTaskSummary, createEmptyTaskSummary(results));
@@ -218,7 +256,7 @@ export function App() {
 
   async function handleCreatePreviewTask() {
     const result = await createTask({
-      task_type: selectedTaskType,
+      task_type: activeView === "ai" ? "ai_analyze" : selectedBatchTaskType,
       inputs: [],
       params: {},
       output_rule: {
@@ -299,43 +337,41 @@ export function App() {
         </div>
 
         <nav className="nav-list" aria-label="功能导航">
-          <button className="nav-item nav-item--active" type="button">
-            <FolderKanban size={18} />
-            项目骨架
-          </button>
-          <button className="nav-item" type="button">
-            <Layers3 size={18} />
-            批量工具
-          </button>
-          <button className="nav-item" type="button">
-            <WandSparkles size={18} />
-            AI 协议层
-          </button>
-          <button className="nav-item" type="button">
-            <Bot size={18} />
-            对话模式
-          </button>
-          <button className="nav-item" type="button">
-            <Settings size={18} />
-            设置
-          </button>
+          {appViews.map((view) => {
+            const Icon = view.icon;
+            return (
+              <button
+                className={activeView === view.id ? "nav-item nav-item--active" : "nav-item"}
+                type="button"
+                onClick={() => handleViewChange(view.id)}
+                key={view.id}
+              >
+                <Icon size={18} />
+                {view.label}
+              </button>
+            );
+          })}
         </nav>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Desktop App Foundation</p>
-            <h1>Phase 0 基础架构</h1>
+            <p className="eyebrow">{activeViewMeta.eyebrow}</p>
+            <h1>
+              <ActiveIcon size={30} />
+              {activeViewMeta.title}
+            </h1>
           </div>
           <span className="pill">{statusMessage}</span>
         </header>
 
+        {activeView === "batch" && (
         <section className="grid-layout">
           <BatchToolPanel
             projectName={projectName}
             outputDir={outputDir}
-            taskType={selectedTaskType}
+            taskType={selectedBatchTaskType}
             executionMode={executionMode}
             pipelineSteps={pipelineSteps}
             favoriteTasks={favoriteTasks}
@@ -354,41 +390,103 @@ export function App() {
             onInputsChange={setInputs}
             onParamsChange={setBatchParams}
             onRun={handleRunBatchTask}
+            taskTypes={batchTaskTypes}
+          />
+
+          <TaskCenter tasks={tasks} />
+          <ProtocolPanel
+            selectedTask={selectedTask}
+            executionMode={executionMode}
+            pipelineSteps={pipelineSteps}
+            inputsCount={inputs.length}
+            aiProvider={aiProvider}
+            onCreatePreviewTask={handleCreatePreviewTask}
+          />
+        </section>
+        )}
+
+        {activeView === "ai" && (
+        <section className="grid-layout">
+          <BatchToolPanel
+            projectName={projectName}
+            outputDir={outputDir}
+            taskType="ai_analyze"
+            executionMode="single"
+            pipelineSteps={[]}
+            favoriteTasks={[]}
+            inputs={inputs}
+            params={batchParams}
+            isRunning={isRunning}
+            progress={progress}
+            onProjectNameChange={setProjectName}
+            onOutputDirChange={setOutputDir}
+            onTaskTypeChange={() => undefined}
+            onExecutionModeChange={() => undefined}
+            onPipelineStepsChange={() => undefined}
+            onSaveFavoriteTask={() => undefined}
+            onApplyFavoriteTask={() => undefined}
+            onDeleteFavoriteTask={() => undefined}
+            onInputsChange={setInputs}
+            onParamsChange={setBatchParams}
+            onRun={handleRunAiTask}
+            title="AI 广告分析"
+            eyebrow="Phase 2"
+            taskTypes={aiTaskTypes}
+            hideFavorites
+            hideExecutionMode
+            runLabel="提交后台分析"
+            runningLabel="提交中..."
           />
 
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
           <TaskCenter tasks={tasks} />
           <AiResultsPanel results={aiResults} />
-          <section className="panel">
+          <ProtocolPanel
+            selectedTask={taskTypes.find((task) => task.type === "ai_analyze") ?? selectedTask}
+            executionMode="single"
+            pipelineSteps={[]}
+            inputsCount={inputs.length}
+            aiProvider={aiProvider}
+            onCreatePreviewTask={handleCreatePreviewTask}
+          />
+        </section>
+        )}
+
+        {activeView === "settings" && (
+        <section className="grid-layout">
+          <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
+          <TaskCenter tasks={tasks} />
+        </section>
+        )}
+
+        {activeView === "project" && (
+        <section className="grid-layout">
+          <TaskCenter tasks={tasks} />
+          <ProtocolPanel
+            selectedTask={selectedTask}
+            executionMode={executionMode}
+            pipelineSteps={pipelineSteps}
+            inputsCount={inputs.length}
+            aiProvider={aiProvider}
+            onCreatePreviewTask={handleCreatePreviewTask}
+          />
+        </section>
+        )}
+
+        {activeView === "chat" && (
+        <section className="grid-layout">
+          <section className="panel panel--primary">
             <div className="panel__header">
               <div>
-                <p className="eyebrow">Protocol</p>
-                <h2>任务与 AI 协议</h2>
+                <p className="eyebrow">Phase 3</p>
+                <h2>对话模式</h2>
               </div>
             </div>
-            <div className="task-preview">
-              <h3>{selectedTask.label}</h3>
-              <p>{selectedTask.description}</p>
-              <code>
-                Run(mode="{executionMode}", steps={executionMode === "single" ? 1 : pipelineSteps.length}, inputs={inputs.length})
-              </code>
-            </div>
-            <div className="task-preview">
-              <h3>{aiProvider.label}</h3>
-              <p>
-                Responses: {getProviderEndpoint(aiProvider, "responses")} · Images:{" "}
-                {getProviderEndpoint(aiProvider, "images")}
-              </p>
-              <code>
-                text={aiProvider.models.text}; vision={aiProvider.models.vision}; image=
-                {aiProvider.models.image}
-              </code>
-            </div>
-            <button className="ghost-button" type="button" onClick={handleCreatePreviewTask}>
-              创建空任务记录
-            </button>
+            <p className="empty">对话式解决问题会在后续阶段接入。</p>
           </section>
+          <TaskCenter tasks={tasks} />
         </section>
+        )}
       </section>
     </main>
   );
@@ -411,6 +509,54 @@ function loadFavoriteTasks(): FavoriteTask[] {
   } catch {
     return [];
   }
+}
+
+function ProtocolPanel({
+  selectedTask,
+  executionMode,
+  pipelineSteps,
+  inputsCount,
+  aiProvider,
+  onCreatePreviewTask,
+}: {
+  selectedTask: { label: string; description: string };
+  executionMode: TaskExecutionMode;
+  pipelineSteps: TaskPipelineStep[];
+  inputsCount: number;
+  aiProvider: AiProviderDescriptor;
+  onCreatePreviewTask: () => void;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Protocol</p>
+          <h2>任务与 AI 协议</h2>
+        </div>
+      </div>
+      <div className="task-preview">
+        <h3>{selectedTask.label}</h3>
+        <p>{selectedTask.description}</p>
+        <code>
+          Run(mode="{executionMode}", steps={executionMode === "single" ? 1 : pipelineSteps.length}, inputs={inputsCount})
+        </code>
+      </div>
+      <div className="task-preview">
+        <h3>{aiProvider.label}</h3>
+        <p>
+          Responses: {getProviderEndpoint(aiProvider, "responses")} · Images:{" "}
+          {getProviderEndpoint(aiProvider, "images")}
+        </p>
+        <code>
+          text={aiProvider.models.text}; vision={aiProvider.models.vision}; image=
+          {aiProvider.models.image}
+        </code>
+      </div>
+      <button className="ghost-button" type="button" onClick={onCreatePreviewTask}>
+        创建空任务记录
+      </button>
+    </section>
+  );
 }
 
 function saveFavoriteTasks(favorites: FavoriteTask[]) {

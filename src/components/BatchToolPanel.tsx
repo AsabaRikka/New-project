@@ -39,9 +39,16 @@ interface BatchToolPanelProps {
   onInputsChange: (inputs: string[]) => void;
   onParamsChange: (params: BatchParams) => void;
   onRun: () => Promise<TaskResult | null>;
+  title?: string;
+  eyebrow?: string;
+  taskTypes?: Array<{ value: TaskType; label: string }>;
+  hideFavorites?: boolean;
+  hideExecutionMode?: boolean;
+  runLabel?: string;
+  runningLabel?: string;
 }
 
-const localTaskTypes: Array<{ value: TaskType; label: string }> = [
+export const batchTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "rename", label: "图片重命名" },
   { value: "resize", label: "图片改尺寸" },
   { value: "compress", label: "图片压缩" },
@@ -49,8 +56,13 @@ const localTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "split", label: "图片切分" },
   { value: "stitch", label: "图片拼接" },
   { value: "organize", label: "文件夹整理" },
+];
+
+export const aiTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "ai_analyze", label: "AI 广告分析" },
 ];
+
+const allTaskTypes = [...batchTaskTypes, ...aiTaskTypes];
 
 export function BatchToolPanel({
   projectName,
@@ -74,6 +86,13 @@ export function BatchToolPanel({
   onInputsChange,
   onParamsChange,
   onRun,
+  title = "图片批量工具",
+  eyebrow = "Phase 1",
+  taskTypes = batchTaskTypes,
+  hideFavorites = false,
+  hideExecutionMode = false,
+  runLabel,
+  runningLabel = "处理中...",
 }: BatchToolPanelProps) {
   const [selectedInputs, setSelectedInputs] = useState<Set<string>>(new Set());
   const [isQueueExpanded, setIsQueueExpanded] = useState(true);
@@ -200,8 +219,8 @@ export function BatchToolPanel({
     <section className="panel panel--primary">
       <div className="panel__header">
         <div>
-          <p className="eyebrow">Phase 1</p>
-          <h2>图片批量工具</h2>
+          <p className="eyebrow">{eyebrow}</p>
+          <h2>{title}</h2>
         </div>
       </div>
 
@@ -213,7 +232,7 @@ export function BatchToolPanel({
         <label>
           <span>任务类型</span>
           <select value={taskType} onChange={(event) => onTaskTypeChange(event.target.value as TaskType)}>
-            {localTaskTypes.map((task) => (
+            {taskTypes.map((task) => (
               <option key={task.value} value={task.value}>
                 {task.label}
               </option>
@@ -222,6 +241,7 @@ export function BatchToolPanel({
         </label>
       </div>
 
+      {!hideFavorites && (
       <div className="favorite-panel">
         <div className="favorite-panel__save">
           <label>
@@ -251,7 +271,9 @@ export function BatchToolPanel({
           </button>
         </div>
       </div>
+      )}
 
+      {!hideExecutionMode && (
       <div className="run-mode-panel">
         <div className="segmented-control" aria-label="任务运行方式">
           <button
@@ -313,6 +335,7 @@ export function BatchToolPanel({
           </div>
         )}
       </div>
+      )}
 
       <div className="toolbar">
         <button className="secondary-button" type="button" onClick={pickImages}>
@@ -659,7 +682,7 @@ export function BatchToolPanel({
 
       <button className="primary-button" type="button" disabled={isRunning || inputs.length === 0 || (executionMode !== "single" && pipelineSteps.length === 0)} onClick={onRun}>
         <Play size={16} />
-        {isRunning ? "处理中..." : executionMode === "serial" ? "运行串联任务" : executionMode === "parallel" ? "运行并联任务" : "运行批处理"}
+        {isRunning ? runningLabel : runLabel ?? (executionMode === "serial" ? "运行串联任务" : executionMode === "parallel" ? "运行并联任务" : "运行批处理")}
       </button>
     </section>
   );
@@ -688,7 +711,7 @@ function sanitizeParams(params: BatchParams) {
 }
 
 function taskLabel(taskType: TaskType) {
-  return localTaskTypes.find((task) => task.value === taskType)?.label ?? taskType;
+  return allTaskTypes.find((task) => task.value === taskType)?.label ?? taskType;
 }
 
 function summarizeStepParams(step: TaskPipelineStep) {
