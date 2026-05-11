@@ -37,6 +37,7 @@ const defaultBatchParams: BatchParams = {
   outputFormat: "original",
   rows: 3,
   cols: 3,
+  splitDetectionMode: "auto",
   splitLineMode: "none",
   splitLineWidth: 0,
   splitOuterBorder: 0,

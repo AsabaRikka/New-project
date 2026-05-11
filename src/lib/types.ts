@@ -94,6 +94,7 @@ export interface BatchParams {
   outputFormat: OutputFormat;
   rows: number;
   cols: number;
+  splitDetectionMode: "auto" | "manual";
   splitLineMode: "none" | "black" | "white" | "black_white";
   splitLineWidth: number;
   splitOuterBorder: number;

@@ -380,9 +380,20 @@ export function BatchToolPanel({
           {taskType === "split" && (
             <>
               <label>
+                <span>边框识别</span>
+                <select
+                  value={params.splitDetectionMode}
+                  onChange={(event) => updateParams({ splitDetectionMode: event.target.value as BatchParams["splitDetectionMode"] })}
+                >
+                  <option value="auto">智能识别</option>
+                  <option value="manual">手动线宽</option>
+                </select>
+              </label>
+              <label>
                 <span>处理分隔线</span>
                 <select
                   value={params.splitLineMode}
+                  disabled={params.splitDetectionMode === "auto"}
                   onChange={(event) => updateParams({ splitLineMode: event.target.value as BatchParams["splitLineMode"] })}
                 >
                   <option value="none">不处理</option>
@@ -391,8 +402,8 @@ export function BatchToolPanel({
                   <option value="black_white">黑线和白线</option>
                 </select>
               </label>
-              <NumberField label="分隔线宽 px" value={params.splitLineWidth} onChange={(splitLineWidth) => updateParams({ splitLineWidth })} />
-              <NumberField label="外边框宽 px" value={params.splitOuterBorder} onChange={(splitOuterBorder) => updateParams({ splitOuterBorder })} />
+              <NumberField label="分隔线宽 px" value={params.splitLineWidth} disabled={params.splitDetectionMode === "auto"} onChange={(splitLineWidth) => updateParams({ splitLineWidth })} />
+              <NumberField label="外边框宽 px" value={params.splitOuterBorder} disabled={params.splitDetectionMode === "auto"} onChange={(splitOuterBorder) => updateParams({ splitOuterBorder })} />
               <label>
                 <span>输出方形单元</span>
                 <select
@@ -482,16 +493,18 @@ function toAssetUrl(path: string) {
 function NumberField({
   label,
   value,
+  disabled = false,
   onChange,
 }: {
   label: string;
   value: number;
+  disabled?: boolean;
   onChange: (value: number) => void;
 }) {
   return (
     <label>
       <span>{label}</span>
-      <input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input type="number" value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
 }

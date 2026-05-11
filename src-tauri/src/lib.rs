@@ -252,7 +252,10 @@ fn create_task(
 ) -> AppResult<TaskResult> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let input_paths = expand_input_paths(&request.inputs, read_bool(&request.params, "recursive", true))?;
+    let input_paths = expand_input_paths(
+        &request.inputs,
+        read_bool(&request.params, "recursive", true),
+    )?;
     let input_count = input_paths.len() as u32;
     let params_json = serde_json::to_string(&request.params)?;
     let task_type_json = serde_json::to_string(&request.task_type)?;
@@ -440,7 +443,14 @@ fn update_task_status(
         "update tasks
         set status = ?1, success_count = ?2, failed_count = ?3, output_dir = ?4, updated_at = ?5
         where id = ?6",
-        params![status_json, success_count, failed_count, output_dir, now, task_id],
+        params![
+            status_json,
+            success_count,
+            failed_count,
+            output_dir,
+            now,
+            task_id
+        ],
     )?;
 
     Ok(())
@@ -469,13 +479,19 @@ fn execute_task(
     );
 
     let mut files = match request.task_type {
-        TaskType::Rename => process_rename(input_paths, &success_dir, &request.params, &mut tracker)?,
-        TaskType::Resize => process_resize(input_paths, &success_dir, &request.params, &mut tracker)?,
+        TaskType::Rename => {
+            process_rename(input_paths, &success_dir, &request.params, &mut tracker)?
+        }
+        TaskType::Resize => {
+            process_resize(input_paths, &success_dir, &request.params, &mut tracker)?
+        }
         TaskType::Compress | TaskType::Convert => {
             process_compress_convert(input_paths, &success_dir, &request.params, &mut tracker)?
         }
         TaskType::Split => process_split(input_paths, &success_dir, &request.params, &mut tracker)?,
-        TaskType::Stitch => process_stitch(input_paths, &success_dir, &request.params, &mut tracker)?,
+        TaskType::Stitch => {
+            process_stitch(input_paths, &success_dir, &request.params, &mut tracker)?
+        }
         TaskType::Organize => process_organize(input_paths, &success_dir, &mut tracker)?,
         _ => {
             return Err(AppError::InvalidParams(
@@ -635,7 +651,8 @@ fn process_resize(
             let image = image::open(input)?;
             let resized = resize_image(&image, &mode, &fit, width, height, percent, allow_upscale);
             let format = resolve_output_format(input, &output_format)?;
-            let output_path = unique_path(&output_dir.join(format_output_name(input, None, &format)));
+            let output_path =
+                unique_path(&output_dir.join(format_output_name(input, None, &format)));
             save_image(&resized, &output_path, &format, quality)?;
             Ok(success_result(input, &output_path))
         })();
@@ -665,7 +682,8 @@ fn process_compress_convert(
         let result = (|| -> AppResult<FileResult> {
             let image = image::open(input)?;
             let format = resolve_compress_output_format(input, &output_format, target_kb)?;
-            let output_path = unique_path(&output_dir.join(format_output_name(input, None, &format)));
+            let output_path =
+                unique_path(&output_dir.join(format_output_name(input, None, &format)));
             if let Some(target_kb) = target_kb {
                 save_image_to_target_size(
                     &image,
@@ -699,6 +717,7 @@ fn process_split(
     let cols = read_u32(params, "cols", 3).max(1);
     let output_format = read_string(params, "outputFormat", "original");
     let quality = read_u8(params, "quality", 82);
+    let detection_mode = read_string(params, "splitDetectionMode", "auto");
     let line_mode = read_string(params, "splitLineMode", "none");
     let remove_lines = line_mode != "none";
     let line_width = if remove_lines {
@@ -724,20 +743,42 @@ fn process_split(
             fs::create_dir_all(&image_dir)?;
             let (width, height) = image.dimensions();
             let mut file_results = Vec::new();
-            let cells = compute_split_cells(width, height, rows, cols, line_width, outer_border, force_square);
+            let cells = if detection_mode == "auto" {
+                compute_smart_split_cells(&image, rows, cols, force_square).unwrap_or_else(|| {
+                    compute_split_cells(
+                        width,
+                        height,
+                        rows,
+                        cols,
+                        line_width,
+                        outer_border,
+                        force_square,
+                    )
+                })
+            } else {
+                compute_split_cells(
+                    width,
+                    height,
+                    rows,
+                    cols,
+                    line_width,
+                    outer_border,
+                    force_square,
+                )
+            };
 
             for cell in cells {
-                    let cropped = image.crop_imm(cell.x, cell.y, cell.width, cell.height);
-                    let filename = format!(
-                        "{}_r{}_c{}.{}",
-                        stem,
-                        cell.row + 1,
-                        cell.col + 1,
-                        extension_for_format(&format)
-                    );
-                    let output_path = unique_path(&image_dir.join(filename));
-                    save_image(&cropped, &output_path, &format, quality)?;
-                    file_results.push(success_result(input, &output_path));
+                let cropped = image.crop_imm(cell.x, cell.y, cell.width, cell.height);
+                let filename = format!(
+                    "{}_r{}_c{}.{}",
+                    stem,
+                    cell.row + 1,
+                    cell.col + 1,
+                    extension_for_format(&format)
+                );
+                let output_path = unique_path(&image_dir.join(filename));
+                save_image(&cropped, &output_path, &format, quality)?;
+                file_results.push(success_result(input, &output_path));
             }
 
             Ok(file_results)
@@ -746,7 +787,12 @@ fn process_split(
             Ok(mut file_results) => {
                 let aggregate = success_result(
                     input,
-                    Path::new(file_results.last().and_then(|file| file.output_path.as_deref()).unwrap_or("")),
+                    Path::new(
+                        file_results
+                            .last()
+                            .and_then(|file| file.output_path.as_deref())
+                            .unwrap_or(""),
+                    ),
                 );
                 tracker.finish_file(&aggregate);
                 results.append(&mut file_results);
@@ -760,6 +806,518 @@ fn process_split(
     }
 
     Ok(results)
+}
+
+fn compute_smart_split_cells(
+    image: &DynamicImage,
+    rows: u32,
+    cols: u32,
+    force_square: bool,
+) -> Option<Vec<SplitCell>> {
+    let (width, height) = image.dimensions();
+    let x_segments = uniform_grid_content_segments(image, true, cols)?;
+    let y_segments = uniform_grid_content_segments(image, false, rows)?;
+    let mut cells = Vec::new();
+
+    for (row, y_segment) in y_segments.iter().enumerate() {
+        for (col, x_segment) in x_segments.iter().enumerate() {
+            let raw = SplitCell {
+                row: row as u32,
+                col: col as u32,
+                x: x_segment.start,
+                y: y_segment.start,
+                width: x_segment.size(),
+                height: y_segment.size(),
+            };
+            let trimmed = trim_split_cell(image, raw, force_square);
+            if trimmed.x >= width
+                || trimmed.y >= height
+                || trimmed.width == 0
+                || trimmed.height == 0
+            {
+                return None;
+            }
+            cells.push(trimmed);
+        }
+    }
+
+    Some(cells)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SegmentRange {
+    start: u32,
+    end: u32,
+}
+
+impl SegmentRange {
+    fn size(self) -> u32 {
+        self.end.saturating_sub(self.start)
+    }
+}
+
+fn uniform_grid_content_segments(
+    image: &DynamicImage,
+    vertical: bool,
+    parts: u32,
+) -> Option<Vec<SegmentRange>> {
+    let n = if vertical {
+        image.width()
+    } else {
+        image.height()
+    };
+    if n < parts * 16 {
+        return None;
+    }
+
+    let profile = line_std_profile(image, vertical);
+    let p10 = percentile(&profile, 10.0);
+    let p25 = percentile(&profile, 25.0);
+    let p50 = percentile(&profile, 50.0);
+    let max_std = f32::min(
+        f32::max(4.0, f32::max(p10 * 2.8, p25 * 1.8)),
+        f32::max(8.0, p50 * 0.7),
+    );
+    let min_band = ((n as f32) * 0.002).round().max(1.0) as u32;
+    let bands = low_variation_segments(&profile, max_std, min_band);
+    if bands.is_empty() {
+        return None;
+    }
+
+    let edge_tol = f32::max(10.0, n as f32 * 0.06);
+    let inner_tol = f32::max(14.0, n as f32 * 0.09);
+    let start_band = pick_segment_near(&bands, 0.0, edge_tol, Some("start"));
+    let end_band = pick_segment_near(&bands, n as f32, edge_tol, Some("end"));
+    let mut inner_bands = Vec::new();
+    for index in 1..parts {
+        inner_bands.push(pick_segment_near(
+            &bands,
+            n as f32 * index as f32 / parts as f32,
+            inner_tol,
+            None,
+        )?);
+    }
+    inner_bands.sort_by_key(|segment| segment.start);
+
+    let start_edge = start_band
+        .filter(|segment| segment.start as f32 <= edge_tol)
+        .map(|segment| segment.end)
+        .unwrap_or(0);
+    let end_edge = end_band
+        .filter(|segment| segment.end as f32 >= n as f32 - edge_tol)
+        .map(|segment| segment.start)
+        .unwrap_or(n);
+
+    let mut bounds = vec![start_edge];
+    for band in inner_bands {
+        bounds.push(band.start);
+        bounds.push(band.end);
+    }
+    bounds.push(end_edge);
+
+    let mut segments = Vec::new();
+    let mut index = 0;
+    while index + 1 < bounds.len() {
+        let segment = SegmentRange {
+            start: bounds[index],
+            end: bounds[index + 1],
+        };
+        if segment.size() == 0 {
+            return None;
+        }
+        segments.push(segment);
+        index += 2;
+    }
+
+    if segments.len() != parts as usize {
+        return None;
+    }
+    let min_tile = u32::max(16, ((n as f32) * 0.18) as u32);
+    if segments.iter().any(|segment| segment.size() < min_tile) {
+        return None;
+    }
+
+    Some(segments)
+}
+
+fn line_std_profile(image: &DynamicImage, vertical: bool) -> Vec<f32> {
+    let rgb = image.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    let len = if vertical { width } else { height };
+    let span = if vertical { height } else { width };
+    let mut profile = Vec::with_capacity(len as usize);
+
+    for index in 0..len {
+        let mut sum = [0.0_f32; 3];
+        let mut sum_sq = [0.0_f32; 3];
+        for offset in 0..span {
+            let pixel = if vertical {
+                rgb.get_pixel(index, offset)
+            } else {
+                rgb.get_pixel(offset, index)
+            };
+            for channel in 0..3 {
+                let value = pixel[channel] as f32;
+                sum[channel] += value;
+                sum_sq[channel] += value * value;
+            }
+        }
+        let mut std_sum = 0.0;
+        for channel in 0..3 {
+            let mean = sum[channel] / span as f32;
+            let variance = (sum_sq[channel] / span as f32 - mean * mean).max(0.0);
+            std_sum += variance.sqrt();
+        }
+        profile.push(std_sum / 3.0);
+    }
+
+    profile
+}
+
+fn low_variation_segments(profile: &[f32], max_std: f32, min_seg: u32) -> Vec<SegmentRange> {
+    let mut segments = Vec::new();
+    let mut index = 0usize;
+    while index < profile.len() {
+        while index < profile.len() && profile[index] > max_std {
+            index += 1;
+        }
+        if index >= profile.len() {
+            break;
+        }
+        let start = index;
+        while index < profile.len() && profile[index] <= max_std {
+            index += 1;
+        }
+        let segment = SegmentRange {
+            start: start as u32,
+            end: index as u32,
+        };
+        if segment.size() >= min_seg {
+            segments.push(segment);
+        }
+    }
+    segments
+}
+
+fn pick_segment_near(
+    segments: &[SegmentRange],
+    target: f32,
+    tolerance: f32,
+    prefer_edge: Option<&str>,
+) -> Option<SegmentRange> {
+    segments
+        .iter()
+        .copied()
+        .filter_map(|segment| {
+            let distance = match prefer_edge {
+                Some("start") => segment.start as f32,
+                Some("end") => (segment.end as f32 - target).abs(),
+                _ => ((segment.start + segment.end) as f32 / 2.0 - target).abs(),
+            };
+            if distance <= tolerance {
+                Some((distance, segment))
+            } else {
+                None
+            }
+        })
+        .min_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, segment)| segment)
+}
+
+fn trim_split_cell(image: &DynamicImage, cell: SplitCell, force_square: bool) -> SplitCell {
+    let mut current = cell;
+    current = trim_cell_edges(image, current, BorderTrimKind::White);
+    current = trim_cell_edges(image, current, BorderTrimKind::Dark);
+    current = trim_low_variation_cell_edges(image, current);
+    if force_square {
+        current = make_square_cell(current);
+        current = trim_cell_edges(image, current, BorderTrimKind::White);
+        current = trim_cell_edges(image, current, BorderTrimKind::Dark);
+        current = trim_low_variation_cell_edges(image, current);
+        current = make_square_cell(current);
+    }
+    current
+}
+
+#[derive(Clone, Copy)]
+enum BorderTrimKind {
+    White,
+    Dark,
+}
+
+fn trim_cell_edges(image: &DynamicImage, cell: SplitCell, kind: BorderTrimKind) -> SplitCell {
+    let rgb = image.to_rgb8();
+    let mut left = cell.x;
+    let mut top = cell.y;
+    let mut right = cell.x + cell.width;
+    let mut bottom = cell.y + cell.height;
+
+    while top < bottom && edge_ratio(&rgb, left, right, top, true, kind) >= threshold_for(kind) {
+        top += 1;
+    }
+    while bottom > top
+        && edge_ratio(&rgb, left, right, bottom - 1, true, kind) >= threshold_for(kind)
+    {
+        bottom -= 1;
+    }
+    while left < right && edge_ratio(&rgb, top, bottom, left, false, kind) >= threshold_for(kind) {
+        left += 1;
+    }
+    while right > left
+        && edge_ratio(&rgb, top, bottom, right - 1, false, kind) >= threshold_for(kind)
+    {
+        right -= 1;
+    }
+
+    cell_from_bounds(cell.row, cell.col, left, top, right, bottom)
+}
+
+fn edge_ratio(
+    rgb: &image::RgbImage,
+    start: u32,
+    end: u32,
+    fixed: u32,
+    horizontal: bool,
+    kind: BorderTrimKind,
+) -> f32 {
+    let mut matched = 0u32;
+    let total = end.saturating_sub(start).max(1);
+    for position in start..end {
+        let pixel = if horizontal {
+            rgb.get_pixel(position, fixed)
+        } else {
+            rgb.get_pixel(fixed, position)
+        };
+        let is_match = match kind {
+            BorderTrimKind::White => pixel[0] >= 245 && pixel[1] >= 245 && pixel[2] >= 245,
+            BorderTrimKind::Dark => pixel[0].max(pixel[1]).max(pixel[2]) <= 35,
+        };
+        if is_match {
+            matched += 1;
+        }
+    }
+    matched as f32 / total as f32
+}
+
+fn threshold_for(kind: BorderTrimKind) -> f32 {
+    match kind {
+        BorderTrimKind::White => 0.995,
+        BorderTrimKind::Dark => 0.985,
+    }
+}
+
+fn trim_low_variation_cell_edges(image: &DynamicImage, cell: SplitCell) -> SplitCell {
+    let rgb = image.to_rgb8();
+    let max_trim_x = ((cell.width as f32) * 0.08).round().max(1.0) as u32;
+    let max_trim_y = ((cell.height as f32) * 0.08).round().max(1.0) as u32;
+    let mut left = cell.x;
+    let mut top = cell.y;
+    let mut right = cell.x + cell.width;
+    let mut bottom = cell.y + cell.height;
+
+    let row_threshold = low_variation_edge_threshold(&rgb, left, right, top, bottom, true);
+    let col_threshold = low_variation_edge_threshold(&rgb, left, right, top, bottom, false);
+    let center_color = average_region_color(
+        &rgb,
+        left + (right - left) / 4,
+        top + (bottom - top) / 4,
+        right - (right - left) / 4,
+        bottom - (bottom - top) / 4,
+    );
+
+    let mut trimmed = 0;
+    while trimmed < max_trim_y
+        && top < bottom
+        && line_std(&rgb, left, right, top, true) <= row_threshold
+        && color_distance(
+            line_average_color(&rgb, left, right, top, true),
+            center_color,
+        ) > 18.0
+    {
+        top += 1;
+        trimmed += 1;
+    }
+    trimmed = 0;
+    while trimmed < max_trim_y
+        && bottom > top
+        && line_std(&rgb, left, right, bottom - 1, true) <= row_threshold
+        && color_distance(
+            line_average_color(&rgb, left, right, bottom - 1, true),
+            center_color,
+        ) > 18.0
+    {
+        bottom -= 1;
+        trimmed += 1;
+    }
+    trimmed = 0;
+    while trimmed < max_trim_x
+        && left < right
+        && line_std(&rgb, top, bottom, left, false) <= col_threshold
+        && color_distance(
+            line_average_color(&rgb, top, bottom, left, false),
+            center_color,
+        ) > 18.0
+    {
+        left += 1;
+        trimmed += 1;
+    }
+    trimmed = 0;
+    while trimmed < max_trim_x
+        && right > left
+        && line_std(&rgb, top, bottom, right - 1, false) <= col_threshold
+        && color_distance(
+            line_average_color(&rgb, top, bottom, right - 1, false),
+            center_color,
+        ) > 18.0
+    {
+        right -= 1;
+        trimmed += 1;
+    }
+
+    if right - left < u32::max(8, (cell.width as f32 * 0.65) as u32)
+        || bottom - top < u32::max(8, (cell.height as f32 * 0.65) as u32)
+    {
+        cell
+    } else {
+        cell_from_bounds(cell.row, cell.col, left, top, right, bottom)
+    }
+}
+
+fn average_region_color(
+    rgb: &image::RgbImage,
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+) -> [f32; 3] {
+    let mut sum = [0.0_f32; 3];
+    let mut count = 0.0_f32;
+    for y in top.min(rgb.height())..bottom.min(rgb.height()).max(top.min(rgb.height()) + 1) {
+        for x in left.min(rgb.width())..right.min(rgb.width()).max(left.min(rgb.width()) + 1) {
+            let pixel = rgb.get_pixel(x.min(rgb.width() - 1), y.min(rgb.height() - 1));
+            for channel in 0..3 {
+                sum[channel] += pixel[channel] as f32;
+            }
+            count += 1.0;
+        }
+    }
+    if count == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    [sum[0] / count, sum[1] / count, sum[2] / count]
+}
+
+fn line_average_color(
+    rgb: &image::RgbImage,
+    start: u32,
+    end: u32,
+    fixed: u32,
+    horizontal: bool,
+) -> [f32; 3] {
+    let mut sum = [0.0_f32; 3];
+    let total = end.saturating_sub(start).max(1) as f32;
+    for position in start..end {
+        let pixel = if horizontal {
+            rgb.get_pixel(position.min(rgb.width() - 1), fixed.min(rgb.height() - 1))
+        } else {
+            rgb.get_pixel(fixed.min(rgb.width() - 1), position.min(rgb.height() - 1))
+        };
+        for channel in 0..3 {
+            sum[channel] += pixel[channel] as f32;
+        }
+    }
+    [sum[0] / total, sum[1] / total, sum[2] / total]
+}
+
+fn color_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
+    let dr = left[0] - right[0];
+    let dg = left[1] - right[1];
+    let db = left[2] - right[2];
+    (dr * dr + dg * dg + db * db).sqrt()
+}
+
+fn low_variation_edge_threshold(
+    rgb: &image::RgbImage,
+    left: u32,
+    right: u32,
+    top: u32,
+    bottom: u32,
+    horizontal: bool,
+) -> f32 {
+    let mut values = Vec::new();
+    if horizontal {
+        for y in top..bottom {
+            values.push(line_std(rgb, left, right, y, true));
+        }
+    } else {
+        for x in left..right {
+            values.push(line_std(rgb, top, bottom, x, false));
+        }
+    }
+    let p12 = percentile(&values, 12.0);
+    let p45 = percentile(&values, 45.0);
+    f32::min(f32::max(3.5, p12 * 2.3), f32::max(7.5, p45 * 0.55))
+}
+
+fn line_std(rgb: &image::RgbImage, start: u32, end: u32, fixed: u32, horizontal: bool) -> f32 {
+    let total = end.saturating_sub(start).max(1);
+    let mut sum = [0.0_f32; 3];
+    let mut sum_sq = [0.0_f32; 3];
+    for position in start..end {
+        let pixel = if horizontal {
+            rgb.get_pixel(position, fixed)
+        } else {
+            rgb.get_pixel(fixed, position)
+        };
+        for channel in 0..3 {
+            let value = pixel[channel] as f32;
+            sum[channel] += value;
+            sum_sq[channel] += value * value;
+        }
+    }
+    let mut std_sum = 0.0;
+    for channel in 0..3 {
+        let mean = sum[channel] / total as f32;
+        let variance = (sum_sq[channel] / total as f32 - mean * mean).max(0.0);
+        std_sum += variance.sqrt();
+    }
+    std_sum / 3.0
+}
+
+fn make_square_cell(cell: SplitCell) -> SplitCell {
+    let side = cell.width.min(cell.height).max(1);
+    SplitCell {
+        x: cell.x + (cell.width - side) / 2,
+        y: cell.y + (cell.height - side) / 2,
+        width: side,
+        height: side,
+        ..cell
+    }
+}
+
+fn cell_from_bounds(row: u32, col: u32, left: u32, top: u32, right: u32, bottom: u32) -> SplitCell {
+    SplitCell {
+        row,
+        col,
+        x: left,
+        y: top,
+        width: right.saturating_sub(left).max(1),
+        height: bottom.saturating_sub(top).max(1),
+    }
+}
+
+fn percentile(values: &[f32], percentile: f32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = ((percentile / 100.0) * (sorted.len().saturating_sub(1)) as f32).round() as usize;
+    sorted[rank.min(sorted.len() - 1)]
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -793,20 +1351,16 @@ fn compute_split_cells(
         for col in 0..cols {
             let x = outer_border
                 + col.saturating_mul(line_width)
-                + col.saturating_mul(cell_area_width)
-                    / cols;
+                + col.saturating_mul(cell_area_width) / cols;
             let y = outer_border
                 + row.saturating_mul(line_width)
-                + row.saturating_mul(cell_area_height)
-                    / rows;
+                + row.saturating_mul(cell_area_height) / rows;
             let next_x = outer_border
                 + col.saturating_mul(line_width)
-                + (col + 1).saturating_mul(cell_area_width)
-                    / cols;
+                + (col + 1).saturating_mul(cell_area_width) / cols;
             let next_y = outer_border
                 + row.saturating_mul(line_width)
-                + (row + 1).saturating_mul(cell_area_height)
-                    / rows;
+                + (row + 1).saturating_mul(cell_area_height) / rows;
             let mut cell_x = x.min(image_width.saturating_sub(1));
             let mut cell_y = y.min(image_height.saturating_sub(1));
             let mut cell_width = next_x.saturating_sub(x).max(1);
@@ -1031,7 +1585,10 @@ fn resize_image(
         "fixed" => (width.max(1), height.max(1)),
         "height" => {
             let ratio = height as f32 / original_height as f32;
-            ((original_width as f32 * ratio).round().max(1.0) as u32, height.max(1))
+            (
+                (original_width as f32 * ratio).round().max(1.0) as u32,
+                height.max(1),
+            )
         }
         "percent" => {
             let ratio = (percent / 100.0).max(0.01);
@@ -1042,7 +1599,10 @@ fn resize_image(
         }
         _ => {
             let ratio = width as f32 / original_width as f32;
-            (width.max(1), (original_height as f32 * ratio).round().max(1.0) as u32)
+            (
+                width.max(1),
+                (original_height as f32 * ratio).round().max(1.0) as u32,
+            )
         }
     };
 
@@ -1330,7 +1890,10 @@ fn unique_path(path: &Path) -> PathBuf {
     }
 
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("file");
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("file");
     let extension = path.extension().and_then(|extension| extension.to_str());
 
     for index in 1.. {
@@ -1355,7 +1918,11 @@ fn file_name(path: &Path) -> String {
 }
 
 fn file_stem(path: &Path) -> String {
-    sanitize_segment(path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("image"))
+    sanitize_segment(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("image"),
+    )
 }
 
 fn sanitize_segment(value: &str) -> String {
@@ -1400,7 +1967,10 @@ fn read_string(params: &serde_json::Value, key: &str, default: &str) -> String {
 }
 
 fn read_bool(params: &serde_json::Value, key: &str, default: bool) -> bool {
-    params.get(key).and_then(|value| value.as_bool()).unwrap_or(default)
+    params
+        .get(key)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(default)
 }
 
 fn read_u32(params: &serde_json::Value, key: &str, default: u32) -> u32 {
@@ -1468,7 +2038,10 @@ fn create_app_state(app_handle: &AppHandle) -> AppResult<AppState> {
 
     let config_path = data_dir.join("config.json");
     if !config_path.exists() {
-        fs::write(&config_path, serde_json::to_string_pretty(&AppConfig::default())?)?;
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&AppConfig::default())?,
+        )?;
     }
 
     let db_path = data_dir.join("app.db");
@@ -1543,7 +2116,10 @@ mod tests {
             }),
         );
         assert_eq!(rename.success_count, 3);
-        assert!(Path::new(&rename.output_dir).join("success").join("ad_03.png").exists());
+        assert!(Path::new(&rename.output_dir)
+            .join("success")
+            .join("ad_03.png")
+            .exists());
 
         let resize = run_test_task(
             TaskType::Resize,
@@ -1579,7 +2155,10 @@ mod tests {
             }),
         );
         assert_eq!(convert.success_count, 3);
-        assert!(Path::new(&convert.output_dir).join("success").join("one.jpg").exists());
+        assert!(Path::new(&convert.output_dir)
+            .join("success")
+            .join("one.jpg")
+            .exists());
 
         let split = run_test_task(
             TaskType::Split,
@@ -1593,13 +2172,11 @@ mod tests {
             }),
         );
         assert_eq!(split.success_count, 6);
-        assert!(
-            Path::new(&split.output_dir)
-                .join("success")
-                .join("one")
-                .join("one_r2_c3.png")
-                .exists()
-        );
+        assert!(Path::new(&split.output_dir)
+            .join("success")
+            .join("one")
+            .join("one_r2_c3.png")
+            .exists());
 
         let stitch = run_test_task(
             TaskType::Stitch,
@@ -1630,9 +2207,19 @@ mod tests {
             serde_json::json!({ "recursive": true }),
         );
         assert_eq!(organize.success_count, 3);
-        assert!(Path::new(&organize.output_dir).join("success").join("png").join("one.png").exists());
-        assert!(Path::new(&organize.output_dir).join("report").join("report.json").exists());
-        assert!(Path::new(&organize.output_dir).join("report").join("report.csv").exists());
+        assert!(Path::new(&organize.output_dir)
+            .join("success")
+            .join("png")
+            .join("one.png")
+            .exists());
+        assert!(Path::new(&organize.output_dir)
+            .join("report")
+            .join("report.json")
+            .exists());
+        assert!(Path::new(&organize.output_dir)
+            .join("report")
+            .join("report.csv")
+            .exists());
     }
 
     #[test]
@@ -1738,6 +2325,40 @@ mod tests {
         assert_eq!(first.dimensions(), (96, 96));
     }
 
+    #[test]
+    fn split_auto_detects_colored_grid_borders() {
+        let temp = tempdir().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        let output_base = temp.path().join("outputs");
+        fs::create_dir_all(&input_dir).expect("input dir");
+        let grid = input_dir.join("colored-grid.png");
+        create_grid_image_with_line_color(&grid, 3, 3, 88, 10, 8, [220, 36, 120, 255]);
+
+        let report = run_test_task(
+            TaskType::Split,
+            &[grid.to_string_lossy().to_string()],
+            &output_base,
+            serde_json::json!({
+                "recursive": true,
+                "rows": 3,
+                "cols": 3,
+                "outputFormat": "png",
+                "splitDetectionMode": "auto",
+                "splitForceSquare": true
+            }),
+        );
+
+        assert_eq!(report.success_count, 9);
+        let first = image::open(
+            Path::new(&report.output_dir)
+                .join("success")
+                .join("colored-grid")
+                .join("colored-grid_r1_c1.png"),
+        )
+        .expect("split image");
+        assert_eq!(first.dimensions(), (88, 88));
+    }
+
     fn run_test_task(
         task_type: TaskType,
         inputs: &[String],
@@ -1754,11 +2375,14 @@ mod tests {
                 keep_originals: true,
             },
         };
-        let input_paths =
-            expand_input_paths(&request.inputs, read_bool(&request.params, "recursive", true))
-                .expect("inputs");
+        let input_paths = expand_input_paths(
+            &request.inputs,
+            read_bool(&request.params, "recursive", true),
+        )
+        .expect("inputs");
         let output_dir = resolve_task_output_dir(&request).expect("output dir");
-        let report = execute_task(None, "test-task", &request, &input_paths, &output_dir).expect("task");
+        let report =
+            execute_task(None, "test-task", &request, &input_paths, &output_dir).expect("task");
         write_reports(&output_dir, &report).expect("reports");
         report
     }
@@ -1782,9 +2406,21 @@ mod tests {
     }
 
     fn create_grid_image(path: &Path, rows: u32, cols: u32, cell: u32, line: u32, border: u32) {
+        create_grid_image_with_line_color(path, rows, cols, cell, line, border, [0, 0, 0, 255]);
+    }
+
+    fn create_grid_image_with_line_color(
+        path: &Path,
+        rows: u32,
+        cols: u32,
+        cell: u32,
+        line: u32,
+        border: u32,
+        line_color: [u8; 4],
+    ) {
         let width = cols * cell + (cols - 1) * line + border * 2;
         let height = rows * cell + (rows - 1) * line + border * 2;
-        let mut image = ImageBuffer::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+        let mut image = ImageBuffer::from_pixel(width, height, Rgba(line_color));
 
         for row in 0..rows {
             for col in 0..cols {
@@ -1795,19 +2431,19 @@ mod tests {
                         image.put_pixel(
                             x,
                             y,
-                            Rgba([
-                                (40 + row * 40) as u8,
-                                (80 + col * 40) as u8,
-                                180,
-                                255,
-                            ]),
+                            Rgba([(40 + row * 40) as u8, (80 + col * 40) as u8, 180, 255]),
                         );
                     }
                 }
             }
         }
 
-        save_image(&DynamicImage::ImageRgba8(image), path, &ImageFormat::Png, 82)
-            .expect("save grid image");
+        save_image(
+            &DynamicImage::ImageRgba8(image),
+            path,
+            &ImageFormat::Png,
+            82,
+        )
+        .expect("save grid image");
     }
 }
