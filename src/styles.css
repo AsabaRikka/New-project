@@ -350,6 +350,12 @@ code {
   gap: 10px;
 }
 
+.task-list__more {
+  margin: 12px 0 0;
+  color: #687789;
+  font-size: 13px;
+}
+
 .ai-result-list {
   display: grid;
   gap: 10px;
@@ -746,6 +752,10 @@ code {
 .task-row__error {
   margin-top: 4px;
   font-size: 12px;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 @media (max-width: 980px) {

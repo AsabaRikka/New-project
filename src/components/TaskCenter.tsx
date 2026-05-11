@@ -14,7 +14,12 @@ const statusIcon = {
   cancelled: XCircle,
 };
 
+const visibleTaskCount = 5;
+
 export function TaskCenter({ tasks }: TaskCenterProps) {
+  const recentTasks = tasks.slice(0, visibleTaskCount);
+  const hiddenCount = Math.max(tasks.length - recentTasks.length, 0);
+
   return (
     <section className="panel">
       <div className="panel__header">
@@ -28,7 +33,7 @@ export function TaskCenter({ tasks }: TaskCenterProps) {
         {tasks.length === 0 ? (
           <p className="empty">暂无任务记录</p>
         ) : (
-          tasks.map((task) => {
+          recentTasks.map((task) => {
             const Icon = statusIcon[task.status];
             return (
               <article className="task-row" key={task.id}>
@@ -46,6 +51,7 @@ export function TaskCenter({ tasks }: TaskCenterProps) {
           })
         )}
       </div>
+      {hiddenCount > 0 && <p className="task-list__more">仅显示最近 {visibleTaskCount} 条，已隐藏 {hiddenCount} 条历史任务</p>}
     </section>
   );
 }
