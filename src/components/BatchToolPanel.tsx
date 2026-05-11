@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   CheckSquare,
@@ -239,7 +240,14 @@ export function BatchToolPanel({
                     </label>
                     <div className="thumb-card__preview">
                       {isImagePath(input) ? (
-                        <img src={toAssetUrl(input)} alt="" loading="lazy" />
+                        <img
+                          src={toAssetUrl(input)}
+                          alt=""
+                          loading="lazy"
+                          onError={(event) => {
+                            event.currentTarget.dataset.failed = "true";
+                          }}
+                        />
                       ) : (
                         <FolderOpen size={32} />
                       )}
@@ -436,8 +444,11 @@ function fileName(path: string) {
 }
 
 function toAssetUrl(path: string) {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  return `asset://localhost${encodeURI(normalized)}`;
+  if ("__TAURI_INTERNALS__" in window) {
+    return convertFileSrc(path);
+  }
+
+  return `file://${path}`;
 }
 
 function NumberField({
