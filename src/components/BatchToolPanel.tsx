@@ -1,6 +1,18 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, Images, Play, Trash2 } from "lucide-react";
-import type { BatchParams, TaskResult, TaskType } from "../lib/types";
+import {
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  Grid2X2,
+  Images,
+  List,
+  Play,
+  Shuffle,
+  Trash2,
+} from "lucide-react";
+import { useMemo, useState } from "react";
+import type { BatchParams, TaskProgress, TaskResult, TaskType } from "../lib/types";
 
 interface BatchToolPanelProps {
   projectName: string;
@@ -9,6 +21,7 @@ interface BatchToolPanelProps {
   inputs: string[];
   params: BatchParams;
   isRunning: boolean;
+  progress: TaskProgress | null;
   onProjectNameChange: (value: string) => void;
   onOutputDirChange: (value: string) => void;
   onTaskTypeChange: (value: TaskType) => void;
@@ -34,6 +47,7 @@ export function BatchToolPanel({
   inputs,
   params,
   isRunning,
+  progress,
   onProjectNameChange,
   onOutputDirChange,
   onTaskTypeChange,
@@ -41,6 +55,12 @@ export function BatchToolPanel({
   onParamsChange,
   onRun,
 }: BatchToolPanelProps) {
+  const [selectedInputs, setSelectedInputs] = useState<Set<string>>(new Set());
+  const [isQueueExpanded, setIsQueueExpanded] = useState(true);
+  const [viewMode, setViewMode] = useState<"list" | "thumb">("list");
+  const selectedCount = selectedInputs.size;
+  const imageExtensions = useMemo(() => new Set(["jpg", "jpeg", "png", "webp"]), []);
+
   async function pickImages() {
     const selected = await open({
       multiple: true,
@@ -48,16 +68,16 @@ export function BatchToolPanel({
       filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp"] }],
     });
     if (Array.isArray(selected)) {
-      onInputsChange([...inputs, ...selected]);
+      onInputsChange(dedupeInputs([...inputs, ...selected]));
     } else if (typeof selected === "string") {
-      onInputsChange([...inputs, selected]);
+      onInputsChange(dedupeInputs([...inputs, selected]));
     }
   }
 
   async function pickFolder() {
     const selected = await open({ multiple: false, directory: true });
     if (typeof selected === "string") {
-      onInputsChange([...inputs, selected]);
+      onInputsChange(dedupeInputs([...inputs, selected]));
     }
   }
 
@@ -69,6 +89,46 @@ export function BatchToolPanel({
   }
 
   const updateParams = (patch: Partial<BatchParams>) => onParamsChange({ ...params, ...patch });
+  const progressPercent =
+    progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+
+  function toggleSelected(input: string) {
+    const next = new Set(selectedInputs);
+    if (next.has(input)) {
+      next.delete(input);
+    } else {
+      next.add(input);
+    }
+    setSelectedInputs(next);
+  }
+
+  function selectAll() {
+    setSelectedInputs(new Set(inputs));
+  }
+
+  function invertSelection() {
+    setSelectedInputs(new Set(inputs.filter((input) => !selectedInputs.has(input))));
+  }
+
+  function removeSelected() {
+    if (selectedInputs.size === 0) {
+      return;
+    }
+    onInputsChange(inputs.filter((input) => !selectedInputs.has(input)));
+    setSelectedInputs(new Set());
+  }
+
+  function removeOne(input: string) {
+    onInputsChange(inputs.filter((item) => item !== input));
+    const next = new Set(selectedInputs);
+    next.delete(input);
+    setSelectedInputs(next);
+  }
+
+  function isImagePath(input: string) {
+    const extension = input.split(".").pop()?.toLowerCase() ?? "";
+    return imageExtensions.has(extension);
+  }
 
   return (
     <section className="panel panel--primary">
@@ -122,15 +182,79 @@ export function BatchToolPanel({
         </div>
       </label>
 
-      <div className="input-list">
-        {inputs.length === 0 ? (
-          <p className="empty">还没有选择图片或文件夹</p>
-        ) : (
-          inputs.map((input) => (
-            <div className="input-row" key={input}>
-              <span>{input}</span>
-            </div>
-          ))
+      <div className="queue-panel">
+        <div className="queue-toolbar">
+          <button className="queue-toggle" type="button" onClick={() => setIsQueueExpanded(!isQueueExpanded)}>
+            {isQueueExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            已选队列 ({inputs.length})
+          </button>
+          <div className="queue-actions">
+            <button className="tiny-button" type="button" onClick={() => setViewMode(viewMode === "list" ? "thumb" : "list")}>
+              {viewMode === "list" ? <Grid2X2 size={15} /> : <List size={15} />}
+              {viewMode === "list" ? "缩略图" : "列表"}
+            </button>
+            <button className="tiny-button" type="button" onClick={selectAll} disabled={inputs.length === 0}>
+              <CheckSquare size={15} />
+              全选
+            </button>
+            <button className="tiny-button" type="button" onClick={invertSelection} disabled={inputs.length === 0}>
+              <Shuffle size={15} />
+              反选
+            </button>
+            <button className="tiny-button tiny-button--danger" type="button" onClick={removeSelected} disabled={selectedCount === 0}>
+              <Trash2 size={15} />
+              删除所选
+            </button>
+          </div>
+        </div>
+
+        {isQueueExpanded && (
+          <div className={viewMode === "list" ? "input-list" : "thumb-grid"}>
+            {inputs.length === 0 ? (
+              <p className="empty">还没有选择图片或文件夹</p>
+            ) : (
+              inputs.map((input) =>
+                viewMode === "list" ? (
+                  <div className="input-row" key={input}>
+                    <input
+                      type="checkbox"
+                      checked={selectedInputs.has(input)}
+                      onChange={() => toggleSelected(input)}
+                      aria-label={`选择 ${input}`}
+                    />
+                    <span>{input}</span>
+                    <button className="icon-button icon-button--small" type="button" onClick={() => removeOne(input)} aria-label="从队列移除">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <article className="thumb-card" key={input}>
+                    <label className="thumb-card__check">
+                      <input
+                        type="checkbox"
+                        checked={selectedInputs.has(input)}
+                        onChange={() => toggleSelected(input)}
+                        aria-label={`选择 ${input}`}
+                      />
+                    </label>
+                    <div className="thumb-card__preview">
+                      {isImagePath(input) ? (
+                        <img src={toAssetUrl(input)} alt="" loading="lazy" />
+                      ) : (
+                        <FolderOpen size={32} />
+                      )}
+                    </div>
+                    <div className="thumb-card__footer">
+                      <span title={input}>{fileName(input)}</span>
+                      <button className="icon-button icon-button--small" type="button" onClick={() => removeOne(input)} aria-label="从队列移除">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </article>
+                ),
+              )
+            )}
+          </div>
         )}
       </div>
 
@@ -226,6 +350,16 @@ export function BatchToolPanel({
                 onChange={(targetKb) => updateParams({ targetKb: targetKb > 0 ? targetKb : null })}
               />
               <NumberField label="最低质量" value={params.minQuality} onChange={(minQuality) => updateParams({ minQuality })} />
+              <label>
+                <span>超标时改尺寸</span>
+                <select
+                  value={params.allowResizeToTarget ? "true" : "false"}
+                  onChange={(event) => updateParams({ allowResizeToTarget: event.target.value === "true" })}
+                >
+                  <option value="false">不允许</option>
+                  <option value="true">允许</option>
+                </select>
+              </label>
             </>
           )}
         </div>
@@ -264,12 +398,46 @@ export function BatchToolPanel({
         </p>
       </div>
 
+      {(isRunning || progress) && (
+        <div className="progress-box">
+          <div className="progress-box__header">
+            <strong>{progress?.message ?? "准备处理..."}</strong>
+            <span>{progressPercent}%</span>
+          </div>
+          <div className="progress-track" aria-label="批处理进度">
+            <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+          </div>
+          <div className="progress-meta">
+            <span>
+              {progress?.current ?? 0}/{progress?.total ?? inputs.length}
+            </span>
+            <span>
+              成功 {progress?.success_count ?? 0} · 失败 {progress?.failed_count ?? 0}
+            </span>
+          </div>
+          {progress?.current_file && <p className="progress-file">{progress.current_file}</p>}
+        </div>
+      )}
+
       <button className="primary-button" type="button" disabled={isRunning || inputs.length === 0} onClick={onRun}>
         <Play size={16} />
         {isRunning ? "处理中..." : "运行批处理"}
       </button>
     </section>
   );
+}
+
+function dedupeInputs(inputs: string[]) {
+  return Array.from(new Set(inputs));
+}
+
+function fileName(path: string) {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function toAssetUrl(path: string) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `asset://localhost${encodeURI(normalized)}`;
 }
 
 function NumberField({

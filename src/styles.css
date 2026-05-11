@@ -23,6 +23,12 @@ select {
   font: inherit;
 }
 
+input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  accent-color: #23695e;
+}
+
 .loading {
   display: grid;
   min-height: 100vh;
@@ -306,16 +312,76 @@ code {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.queue-panel {
+  margin-top: 14px;
+  border: 1px solid #d7e1e8;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.queue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  background: #f5f9fa;
+  border-bottom: 1px solid #dfe8ee;
+}
+
+.queue-toggle,
+.tiny-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.queue-toggle {
+  padding: 0;
+  color: #314253;
+  background: transparent;
+  border: 0;
+}
+
+.queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.tiny-button {
+  padding: 0 9px;
+  color: #526476;
+  background: #ffffff;
+  border: 1px solid #cbd8e1;
+  font-size: 12px;
+}
+
+.tiny-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tiny-button--danger {
+  color: #a43b32;
+}
+
 .input-list {
   display: grid;
   max-height: 190px;
-  margin-top: 14px;
   overflow: auto;
-  border: 1px solid #e0e7ed;
-  border-radius: 8px;
 }
 
 .input-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: center;
   min-width: 0;
   padding: 10px 12px;
   color: #314253;
@@ -331,6 +397,113 @@ code {
 .input-row span {
   display: block;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button--small {
+  width: 30px;
+  min-height: 30px;
+  color: #6a7a89;
+  background: #ffffff;
+  border: 1px solid #d4dfe7;
+}
+
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 10px;
+  max-height: 360px;
+  padding: 10px;
+  overflow: auto;
+  background: #fbfdfe;
+}
+
+.thumb-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: 96px auto;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #dbe5ec;
+  border-radius: 8px;
+}
+
+.thumb-card__check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  display: block;
+}
+
+.thumb-card__preview {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #607282;
+  background: #eef4f6;
+}
+
+.thumb-card__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumb-card__footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.thumb-card__footer span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-box {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 14px;
+  background: #f6faf8;
+  border: 1px solid #d4e8e0;
+  border-radius: 8px;
+}
+
+.progress-box__header,
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #24453f;
+  font-size: 13px;
+}
+
+.progress-track {
+  height: 10px;
+  overflow: hidden;
+  background: #dbe7e3;
+  border-radius: 999px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #23695e;
+  border-radius: inherit;
+  transition: width 160ms ease;
+}
+
+.progress-file {
+  margin: 0;
+  overflow: hidden;
+  color: #5d6b79;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -359,6 +532,15 @@ code {
   .form-grid,
   .inline-field {
     grid-template-columns: 1fr;
+  }
+
+  .queue-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .queue-actions {
+    justify-content: flex-start;
   }
 
   .panel--primary {

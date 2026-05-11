@@ -1,0 +1,2 @@
+input_path,output_path,status,error
+/Users/rain/Desktop/九图.png,,failed,invalid task params: 最低质量 45 时仍为 475KB，无法压缩到 400KB。请允许改尺寸后再试。

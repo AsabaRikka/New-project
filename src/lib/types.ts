@@ -57,6 +57,19 @@ export interface TaskResult {
   errors: string[];
 }
 
+export interface TaskProgress {
+  task_id: string;
+  task_type: TaskType;
+  status: TaskStatus;
+  current: number;
+  total: number;
+  success_count: number;
+  failed_count: number;
+  current_file: string | null;
+  output_dir: string | null;
+  message: string;
+}
+
 export type SortBy = "input" | "filename" | "modified" | "created";
 export type FitMode = "contain" | "cover" | "stretch";
 export type OutputFormat = "original" | "jpg" | "png" | "webp";
@@ -74,6 +87,7 @@ export interface BatchParams {
   percent: number;
   fit: FitMode;
   allowUpscale: boolean;
+  allowResizeToTarget: boolean;
   quality: number;
   minQuality: number;
   targetKb: number | null;

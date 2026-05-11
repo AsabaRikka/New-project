@@ -1,0 +1,40 @@
+{
+  "task_id": "3b9698c8-e75e-45ca-9640-eee1b3d210d0",
+  "task_type": "compress",
+  "status": "completed",
+  "input_count": 1,
+  "success_count": 1,
+  "failed_count": 0,
+  "output_dir": "/Users/rain/Documents/New project/src-tauri/outputs/default-project/compress/2026-05-11_13-51-31",
+  "params": {
+    "allowResizeToTarget": false,
+    "allowUpscale": false,
+    "background": "#ffffff",
+    "cellHeight": 512,
+    "cellWidth": 512,
+    "cols": 3,
+    "fit": "contain",
+    "height": 1080,
+    "minQuality": 30,
+    "outputFormat": "original",
+    "padding": 3,
+    "percent": 100,
+    "prefix": "image",
+    "quality": 100,
+    "recursive": true,
+    "resizeMode": "width",
+    "rows": 3,
+    "sortBy": "input",
+    "startIndex": 1,
+    "targetKb": 400,
+    "width": 1080
+  },
+  "files": [
+    {
+      "input_path": "/Users/rain/Desktop/九图.png",
+      "output_path": "/Users/rain/Documents/New project/src-tauri/outputs/default-project/compress/2026-05-11_13-51-31/success/__.jpg",
+      "status": "success",
+      "error": null
+    }
+  ]
+}

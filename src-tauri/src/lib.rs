@@ -15,7 +15,7 @@ use image::{
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -178,6 +178,20 @@ struct TaskRecord {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TaskProgress {
+    task_id: String,
+    task_type: TaskType,
+    status: TaskStatus,
+    current: u32,
+    total: u32,
+    success_count: u32,
+    failed_count: u32,
+    current_file: Option<String>,
+    output_dir: Option<String>,
+    message: String,
+}
+
 struct AppState {
     db: Mutex<Connection>,
     config_path: PathBuf,
@@ -231,7 +245,11 @@ fn clear_api_key(state: tauri::State<'_, AppState>) -> AppResult<bool> {
 }
 
 #[tauri::command]
-fn create_task(request: TaskRequest, state: tauri::State<'_, AppState>) -> AppResult<TaskResult> {
+fn create_task(
+    request: TaskRequest,
+    app_handle: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<TaskResult> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let input_paths = expand_input_paths(&request.inputs, read_bool(&request.params, "recursive", true))?;
@@ -270,8 +288,23 @@ fn create_task(request: TaskRequest, state: tauri::State<'_, AppState>) -> AppRe
         0,
         Some(&output_dir_string),
     )?;
+    emit_progress(
+        Some(&app_handle),
+        TaskProgress {
+            task_id: id.clone(),
+            task_type: request.task_type.clone(),
+            status: TaskStatus::Running,
+            current: 0,
+            total: input_count,
+            success_count: 0,
+            failed_count: 0,
+            current_file: None,
+            output_dir: Some(output_dir_string.clone()),
+            message: "开始处理图片...".to_string(),
+        },
+    );
 
-    match execute_task(&id, &request, &input_paths, &output_dir) {
+    match execute_task(Some(&app_handle), &id, &request, &input_paths, &output_dir) {
         Ok(mut report) => {
             report.status = if report.failed_count > 0 {
                 TaskStatus::Failed
@@ -287,6 +320,24 @@ fn create_task(request: TaskRequest, state: tauri::State<'_, AppState>) -> AppRe
                 report.failed_count,
                 Some(&report.output_dir),
             )?;
+            emit_progress(
+                Some(&app_handle),
+                TaskProgress {
+                    task_id: id.clone(),
+                    task_type: request.task_type.clone(),
+                    status: report.status.clone(),
+                    current: input_count,
+                    total: input_count,
+                    success_count: report.success_count,
+                    failed_count: report.failed_count,
+                    current_file: None,
+                    output_dir: Some(report.output_dir.clone()),
+                    message: format!(
+                        "处理完成：成功 {}，失败 {}",
+                        report.success_count, report.failed_count
+                    ),
+                },
+            );
 
             Ok(TaskResult {
                 task_id: id,
@@ -310,6 +361,21 @@ fn create_task(request: TaskRequest, state: tauri::State<'_, AppState>) -> AppRe
                 input_count,
                 Some(&output_dir_string),
             )?;
+            emit_progress(
+                Some(&app_handle),
+                TaskProgress {
+                    task_id: id.clone(),
+                    task_type: request.task_type.clone(),
+                    status: TaskStatus::Failed,
+                    current: input_count,
+                    total: input_count,
+                    success_count: 0,
+                    failed_count: input_count,
+                    current_file: None,
+                    output_dir: Some(output_dir_string.clone()),
+                    message: error.to_string(),
+                },
+            );
 
             Ok(TaskResult {
                 task_id: id,
@@ -381,6 +447,7 @@ fn update_task_status(
 }
 
 fn execute_task(
+    app_handle: Option<&AppHandle>,
     task_id: &str,
     request: &TaskRequest,
     input_paths: &[PathBuf],
@@ -393,15 +460,23 @@ fn execute_task(
     fs::create_dir_all(&failed_dir)?;
     fs::create_dir_all(&report_dir)?;
 
+    let mut tracker = ProgressTracker::new(
+        app_handle,
+        task_id,
+        request.task_type.clone(),
+        input_paths.len() as u32,
+        output_dir.to_string_lossy().to_string(),
+    );
+
     let mut files = match request.task_type {
-        TaskType::Rename => process_rename(input_paths, &success_dir, &request.params)?,
-        TaskType::Resize => process_resize(input_paths, &success_dir, &request.params)?,
+        TaskType::Rename => process_rename(input_paths, &success_dir, &request.params, &mut tracker)?,
+        TaskType::Resize => process_resize(input_paths, &success_dir, &request.params, &mut tracker)?,
         TaskType::Compress | TaskType::Convert => {
-            process_compress_convert(input_paths, &success_dir, &request.params)?
+            process_compress_convert(input_paths, &success_dir, &request.params, &mut tracker)?
         }
-        TaskType::Split => process_split(input_paths, &success_dir, &request.params)?,
-        TaskType::Stitch => process_stitch(input_paths, &success_dir, &request.params)?,
-        TaskType::Organize => process_organize(input_paths, &success_dir)?,
+        TaskType::Split => process_split(input_paths, &success_dir, &request.params, &mut tracker)?,
+        TaskType::Stitch => process_stitch(input_paths, &success_dir, &request.params, &mut tracker)?,
+        TaskType::Organize => process_organize(input_paths, &success_dir, &mut tracker)?,
         _ => {
             return Err(AppError::InvalidParams(
                 "Phase 1 only supports local image batch tasks".to_string(),
@@ -432,10 +507,91 @@ fn execute_task(
     })
 }
 
+struct ProgressTracker<'a> {
+    app_handle: Option<&'a AppHandle>,
+    task_id: String,
+    task_type: TaskType,
+    total: u32,
+    current: u32,
+    success_count: u32,
+    failed_count: u32,
+    output_dir: String,
+}
+
+impl<'a> ProgressTracker<'a> {
+    fn new(
+        app_handle: Option<&'a AppHandle>,
+        task_id: &str,
+        task_type: TaskType,
+        total: u32,
+        output_dir: String,
+    ) -> Self {
+        Self {
+            app_handle,
+            task_id: task_id.to_string(),
+            task_type,
+            total,
+            current: 0,
+            success_count: 0,
+            failed_count: 0,
+            output_dir,
+        }
+    }
+
+    fn start_file(&self, input: &Path) {
+        emit_progress(
+            self.app_handle,
+            TaskProgress {
+                task_id: self.task_id.clone(),
+                task_type: self.task_type.clone(),
+                status: TaskStatus::Running,
+                current: self.current,
+                total: self.total,
+                success_count: self.success_count,
+                failed_count: self.failed_count,
+                current_file: Some(input.to_string_lossy().to_string()),
+                output_dir: Some(self.output_dir.clone()),
+                message: format!("正在处理 {}", file_name(input)),
+            },
+        );
+    }
+
+    fn finish_file(&mut self, result: &FileResult) {
+        self.current += 1;
+        if result.status == "success" {
+            self.success_count += 1;
+        } else {
+            self.failed_count += 1;
+        }
+        emit_progress(
+            self.app_handle,
+            TaskProgress {
+                task_id: self.task_id.clone(),
+                task_type: self.task_type.clone(),
+                status: TaskStatus::Running,
+                current: self.current,
+                total: self.total,
+                success_count: self.success_count,
+                failed_count: self.failed_count,
+                current_file: Some(result.input_path.clone()),
+                output_dir: Some(self.output_dir.clone()),
+                message: format!("已处理 {}/{}", self.current, self.total),
+            },
+        );
+    }
+}
+
+fn emit_progress(app_handle: Option<&AppHandle>, progress: TaskProgress) {
+    if let Some(app_handle) = app_handle {
+        let _ = app_handle.emit("task-progress", progress);
+    }
+}
+
 fn process_rename(
     input_paths: &[PathBuf],
     output_dir: &Path,
     params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
 ) -> AppResult<Vec<FileResult>> {
     let prefix = read_string(params, "prefix", "image");
     let suffix = read_string(params, "suffix", "");
@@ -443,23 +599,25 @@ fn process_rename(
     let padding = read_usize(params, "padding", 3);
     let sorted = sort_paths(input_paths, &read_string(params, "sortBy", "input"));
 
-    Ok(sorted
-        .iter()
-        .enumerate()
-        .map(|(position, input)| {
-            let extension = normalized_extension(input).unwrap_or_else(|| "jpg".to_string());
-            let index = start_index + position as u32;
-            let filename = format!("{prefix}_{index:0padding$}{suffix}.{extension}");
-            let output_path = unique_path(&output_dir.join(filename));
-            copy_file(input, &output_path)
-        })
-        .collect())
+    let mut results = Vec::new();
+    for (position, input) in sorted.iter().enumerate() {
+        tracker.start_file(input);
+        let extension = normalized_extension(input).unwrap_or_else(|| "jpg".to_string());
+        let index = start_index + position as u32;
+        let filename = format!("{prefix}_{index:0padding$}{suffix}.{extension}");
+        let output_path = unique_path(&output_dir.join(filename));
+        let result = copy_file(input, &output_path);
+        tracker.finish_file(&result);
+        results.push(result);
+    }
+    Ok(results)
 }
 
 fn process_resize(
     input_paths: &[PathBuf],
     output_dir: &Path,
     params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
 ) -> AppResult<Vec<FileResult>> {
     let mode = read_string(params, "resizeMode", "width");
     let fit = read_string(params, "fit", "contain");
@@ -472,6 +630,7 @@ fn process_resize(
     let mut results = Vec::new();
 
     for input in input_paths {
+        tracker.start_file(input);
         let result = (|| -> AppResult<FileResult> {
             let image = image::open(input)?;
             let resized = resize_image(&image, &mode, &fit, width, height, percent, allow_upscale);
@@ -480,7 +639,9 @@ fn process_resize(
             save_image(&resized, &output_path, &format, quality)?;
             Ok(success_result(input, &output_path))
         })();
-        results.push(result.unwrap_or_else(|error| failed_result(input, error)));
+        let result = result.unwrap_or_else(|error| failed_result(input, error));
+        tracker.finish_file(&result);
+        results.push(result);
     }
 
     Ok(results)
@@ -490,26 +651,39 @@ fn process_compress_convert(
     input_paths: &[PathBuf],
     output_dir: &Path,
     params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
 ) -> AppResult<Vec<FileResult>> {
     let output_format = read_string(params, "outputFormat", "original");
     let quality = read_u8(params, "quality", 82);
     let target_kb = read_optional_u64(params, "targetKb");
     let min_quality = read_u8(params, "minQuality", 45);
+    let allow_resize_to_target = read_bool(params, "allowResizeToTarget", false);
     let mut results = Vec::new();
 
     for input in input_paths {
+        tracker.start_file(input);
         let result = (|| -> AppResult<FileResult> {
             let image = image::open(input)?;
-            let format = resolve_output_format(input, &output_format)?;
+            let format = resolve_compress_output_format(input, &output_format, target_kb)?;
             let output_path = unique_path(&output_dir.join(format_output_name(input, None, &format)));
             if let Some(target_kb) = target_kb {
-                save_image_to_target_size(&image, &output_path, &format, quality, min_quality, target_kb)?;
+                save_image_to_target_size(
+                    &image,
+                    &output_path,
+                    &format,
+                    quality,
+                    min_quality,
+                    target_kb,
+                    allow_resize_to_target,
+                )?;
             } else {
                 save_image(&image, &output_path, &format, quality)?;
             }
             Ok(success_result(input, &output_path))
         })();
-        results.push(result.unwrap_or_else(|error| failed_result(input, error)));
+        let result = result.unwrap_or_else(|error| failed_result(input, error));
+        tracker.finish_file(&result);
+        results.push(result);
     }
 
     Ok(results)
@@ -519,6 +693,7 @@ fn process_split(
     input_paths: &[PathBuf],
     output_dir: &Path,
     params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
 ) -> AppResult<Vec<FileResult>> {
     let rows = read_u32(params, "rows", 3).max(1);
     let cols = read_u32(params, "cols", 3).max(1);
@@ -527,6 +702,7 @@ fn process_split(
     let mut results = Vec::new();
 
     for input in input_paths {
+        tracker.start_file(input);
         let result = (|| -> AppResult<Vec<FileResult>> {
             let image = image::open(input)?;
             let format = resolve_output_format(input, &output_format)?;
@@ -559,8 +735,19 @@ fn process_split(
             Ok(file_results)
         })();
         match result {
-            Ok(mut file_results) => results.append(&mut file_results),
-            Err(error) => results.push(failed_result(input, error)),
+            Ok(mut file_results) => {
+                let aggregate = success_result(
+                    input,
+                    Path::new(file_results.last().and_then(|file| file.output_path.as_deref()).unwrap_or("")),
+                );
+                tracker.finish_file(&aggregate);
+                results.append(&mut file_results);
+            }
+            Err(error) => {
+                let result = failed_result(input, error);
+                tracker.finish_file(&result);
+                results.push(result);
+            }
         }
     }
 
@@ -571,6 +758,7 @@ fn process_stitch(
     input_paths: &[PathBuf],
     output_dir: &Path,
     params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
 ) -> AppResult<Vec<FileResult>> {
     let rows = read_u32(params, "rows", 3).max(1);
     let cols = read_u32(params, "cols", 3).max(1);
@@ -586,6 +774,9 @@ fn process_stitch(
     let mut results = Vec::new();
 
     for (batch_index, chunk) in sorted.chunks(batch_size).enumerate() {
+        if let Some(first_input) = chunk.first() {
+            tracker.start_file(first_input);
+        }
         let result = (|| -> AppResult<FileResult> {
             let mut canvas = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
                 cols * cell_width,
@@ -619,7 +810,7 @@ fn process_stitch(
                 error: None,
             })
         })();
-        results.push(result.unwrap_or_else(|error| FileResult {
+        let result = result.unwrap_or_else(|error| FileResult {
             input_path: chunk
                 .iter()
                 .map(|path| path.to_string_lossy().to_string())
@@ -628,25 +819,34 @@ fn process_stitch(
             output_path: None,
             status: "failed".to_string(),
             error: Some(error.to_string()),
-        }));
+        });
+        tracker.finish_file(&result);
+        results.push(result);
     }
 
     Ok(results)
 }
 
-fn process_organize(input_paths: &[PathBuf], output_dir: &Path) -> AppResult<Vec<FileResult>> {
-    Ok(input_paths
-        .iter()
-        .map(|input| {
-            let extension = normalized_extension(input).unwrap_or_else(|| "unknown".to_string());
-            let target_dir = output_dir.join(extension);
-            if let Err(error) = fs::create_dir_all(&target_dir) {
-                return failed_result(input, error.into());
-            }
+fn process_organize(
+    input_paths: &[PathBuf],
+    output_dir: &Path,
+    tracker: &mut ProgressTracker<'_>,
+) -> AppResult<Vec<FileResult>> {
+    let mut results = Vec::new();
+    for input in input_paths {
+        tracker.start_file(input);
+        let extension = normalized_extension(input).unwrap_or_else(|| "unknown".to_string());
+        let target_dir = output_dir.join(extension);
+        let result = if let Err(error) = fs::create_dir_all(&target_dir) {
+            failed_result(input, error.into())
+        } else {
             let output_path = unique_path(&target_dir.join(file_name(input)));
             copy_file(input, &output_path)
-        })
-        .collect())
+        };
+        tracker.finish_file(&result);
+        results.push(result);
+    }
+    Ok(results)
 }
 
 fn expand_input_paths(inputs: &[String], recursive: bool) -> AppResult<Vec<PathBuf>> {
@@ -832,21 +1032,93 @@ fn save_image_to_target_size(
     quality: u8,
     min_quality: u8,
     target_kb: u64,
+    allow_resize_to_target: bool,
 ) -> AppResult<()> {
-    let mut current_quality = quality;
-    loop {
-        save_image(image, output_path, format, current_quality)?;
-        let size_kb = fs::metadata(output_path)?.len() / 1024;
-        if size_kb <= target_kb
-            || current_quality <= min_quality
-            || !matches!(format, ImageFormat::Jpeg)
-        {
-            break;
-        }
-        current_quality = current_quality.saturating_sub(8).max(min_quality);
+    if !matches!(format, ImageFormat::Jpeg) {
+        return Err(AppError::InvalidParams(
+            "target size compression currently requires JPEG output".to_string(),
+        ));
     }
 
-    Ok(())
+    let target_bytes = target_kb.saturating_mul(1024).max(1);
+    let min_quality = min_quality.clamp(1, quality.max(1));
+    let mut working_image = image.clone();
+    if try_save_jpeg_under_target(
+        &working_image,
+        output_path,
+        quality,
+        min_quality,
+        target_bytes,
+    )? {
+        return Ok(());
+    }
+
+    if !allow_resize_to_target {
+        let size_kb = fs::metadata(output_path)?.len() / 1024;
+        return Err(AppError::InvalidParams(format!(
+            "最低质量 {min_quality} 时仍为 {size_kb}KB，无法压缩到 {target_kb}KB。请允许改尺寸后再试。"
+        )));
+    }
+
+    for _ in 0..32 {
+        let (width, height) = working_image.dimensions();
+        if width <= 320 || height <= 320 {
+            break;
+        }
+        let next_width = ((width as f32) * 0.88).round().max(1.0) as u32;
+        let next_height = ((height as f32) * 0.88).round().max(1.0) as u32;
+        working_image = working_image.resize(next_width, next_height, FilterType::Lanczos3);
+        if try_save_jpeg_under_target(
+            &working_image,
+            output_path,
+            quality,
+            min_quality,
+            target_bytes,
+        )? {
+            return Ok(());
+        }
+    }
+
+    let size_kb = fs::metadata(output_path)?.len() / 1024;
+    Err(AppError::InvalidParams(format!(
+        "已允许改尺寸，但压缩结果仍为 {size_kb}KB，无法达到 {target_kb}KB。"
+    )))
+}
+
+fn try_save_jpeg_under_target(
+    image: &DynamicImage,
+    output_path: &Path,
+    quality: u8,
+    min_quality: u8,
+    target_bytes: u64,
+) -> AppResult<bool> {
+    let min_quality = min_quality.clamp(1, 100);
+    let max_quality = quality.clamp(min_quality, 100);
+
+    save_image(image, output_path, &ImageFormat::Jpeg, min_quality)?;
+    if fs::metadata(output_path)?.len() > target_bytes {
+        return Ok(false);
+    }
+
+    let mut best_quality = min_quality;
+    let mut low = min_quality;
+    let mut high = max_quality;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        save_image(image, output_path, &ImageFormat::Jpeg, mid)?;
+        if fs::metadata(output_path)?.len() <= target_bytes {
+            best_quality = mid;
+            low = mid.saturating_add(1);
+        } else {
+            if mid == 0 {
+                break;
+            }
+            high = mid.saturating_sub(1);
+        }
+    }
+
+    save_image(image, output_path, &ImageFormat::Jpeg, best_quality)?;
+    Ok(true)
 }
 
 fn copy_file(input: &Path, output_path: &Path) -> FileResult {
@@ -904,6 +1176,25 @@ fn resolve_output_format(input: &Path, output_format: &str) -> AppResult<ImageFo
         resolve_format_name(&extension)
     } else {
         resolve_format_name(output_format)
+    }
+}
+
+fn resolve_compress_output_format(
+    input: &Path,
+    output_format: &str,
+    target_kb: Option<u64>,
+) -> AppResult<ImageFormat> {
+    if target_kb.is_none() {
+        return resolve_output_format(input, output_format);
+    }
+
+    match output_format.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => Ok(ImageFormat::Jpeg),
+        // Target-size mode is byte-budgeted lossy compression. PNG and the image crate's
+        // WebP path are not quality-controlled here, so use JPEG instead of silently missing
+        // the requested size by megabytes.
+        "original" | "png" | "webp" => Ok(ImageFormat::Jpeg),
+        other => Err(AppError::UnsupportedFormat(other.to_string())),
     }
 }
 
@@ -1244,6 +1535,73 @@ mod tests {
         assert!(Path::new(&organize.output_dir).join("report").join("report.csv").exists());
     }
 
+    #[test]
+    fn target_size_compression_fails_without_resize_permission() {
+        let temp = tempdir().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        let output_base = temp.path().join("outputs");
+        fs::create_dir_all(&input_dir).expect("input dir");
+        let large_png = input_dir.join("large.png");
+        create_noisy_png(&large_png, 1800, 1400);
+
+        let report = run_test_task(
+            TaskType::Compress,
+            &[large_png.to_string_lossy().to_string()],
+            &output_base,
+            serde_json::json!({
+                "recursive": true,
+                "outputFormat": "original",
+                "quality": 82,
+                "minQuality": 35,
+                "targetKb": 400,
+                "allowResizeToTarget": false
+            }),
+        );
+
+        assert_eq!(report.success_count, 0);
+        assert_eq!(report.failed_count, 1);
+        assert!(report.files[0]
+            .error
+            .as_ref()
+            .expect("error")
+            .contains("请允许改尺寸后再试"));
+    }
+
+    #[test]
+    fn target_size_compression_resizes_only_when_allowed() {
+        let temp = tempdir().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        let output_base = temp.path().join("outputs");
+        fs::create_dir_all(&input_dir).expect("input dir");
+        let large_png = input_dir.join("large.png");
+        create_noisy_png(&large_png, 1800, 1400);
+
+        let report = run_test_task(
+            TaskType::Compress,
+            &[large_png.to_string_lossy().to_string()],
+            &output_base,
+            serde_json::json!({
+                "recursive": true,
+                "outputFormat": "original",
+                "quality": 82,
+                "minQuality": 35,
+                "targetKb": 400,
+                "allowResizeToTarget": true
+            }),
+        );
+
+        assert_eq!(report.success_count, 1);
+        let output_path = Path::new(&report.output_dir)
+            .join("success")
+            .join("large.jpg");
+        assert!(output_path.exists());
+        let size_kb = fs::metadata(output_path).expect("output metadata").len() / 1024;
+        assert!(
+            size_kb <= 400,
+            "expected <= 400KB compressed output, got {size_kb}KB"
+        );
+    }
+
     fn run_test_task(
         task_type: TaskType,
         inputs: &[String],
@@ -1264,7 +1622,7 @@ mod tests {
             expand_input_paths(&request.inputs, read_bool(&request.params, "recursive", true))
                 .expect("inputs");
         let output_dir = resolve_task_output_dir(&request).expect("output dir");
-        let report = execute_task("test-task", &request, &input_paths, &output_dir).expect("task");
+        let report = execute_task(None, "test-task", &request, &input_paths, &output_dir).expect("task");
         write_reports(&output_dir, &report).expect("reports");
         report
     }
@@ -1273,5 +1631,17 @@ mod tests {
         let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(width, height, Rgba(color)));
         let format = resolve_output_format(path, "original").expect("format");
         save_image(&image, path, &format, 82).expect("save sample");
+    }
+
+    fn create_noisy_png(path: &Path, width: u32, height: u32) {
+        let mut image = ImageBuffer::new(width, height);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let red = ((x * 37 + y * 17) % 256) as u8;
+            let green = ((x * 11 + y * 53) % 256) as u8;
+            let blue = ((x * 91 + y * 7) % 256) as u8;
+            *pixel = Rgba([red, green, blue, 255]);
+        }
+        let image = DynamicImage::ImageRgba8(image);
+        save_image(&image, path, &ImageFormat::Png, 82).expect("save noisy png");
     }
 }

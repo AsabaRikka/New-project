@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import { createTask, getAppConfig, listTasks, saveAppConfig } from "./lib/api";
-import type { AppConfig, BatchParams, TaskRecord, TaskType } from "./lib/types";
+import type { AppConfig, BatchParams, TaskProgress, TaskRecord, TaskType } from "./lib/types";
 import { BatchToolPanel } from "./components/BatchToolPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
@@ -29,6 +30,7 @@ const defaultBatchParams: BatchParams = {
   percent: 100,
   fit: "contain",
   allowUpscale: false,
+  allowResizeToTarget: false,
   quality: 82,
   minQuality: 45,
   targetKb: null,
@@ -49,6 +51,7 @@ export function App() {
   const [inputs, setInputs] = useState<string[]>([]);
   const [batchParams, setBatchParams] = useState<BatchParams>(defaultBatchParams);
   const [isRunning, setIsRunning] = useState(false);
+  const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [statusMessage, setStatusMessage] = useState("正在加载本地配置...");
 
   useEffect(() => {
@@ -58,6 +61,20 @@ export function App() {
       setOutputDir(nextConfig.default_output_dir ?? "");
       setStatusMessage("Phase 1 就绪");
     });
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen<TaskProgress>("task-progress", (event) => {
+      setProgress(event.payload);
+      setStatusMessage(event.payload.message);
+    }).then((nextUnlisten) => {
+      unlisten = nextUnlisten;
+    });
+
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const selectedTask = useMemo(
@@ -81,6 +98,7 @@ export function App() {
     }
 
     setIsRunning(true);
+    setProgress(null);
     setStatusMessage("正在处理图片...");
     try {
       const params = Object.fromEntries(
@@ -185,6 +203,7 @@ export function App() {
             inputs={inputs}
             params={batchParams}
             isRunning={isRunning}
+            progress={progress}
             onProjectNameChange={setProjectName}
             onOutputDirChange={setOutputDir}
             onTaskTypeChange={setSelectedTaskType}

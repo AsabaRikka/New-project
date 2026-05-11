@@ -1,0 +1,40 @@
+{
+  "task_id": "e9debd19-682b-4e1b-9dcf-37dbbdbc8980",
+  "task_type": "compress",
+  "status": "failed",
+  "input_count": 1,
+  "success_count": 0,
+  "failed_count": 1,
+  "output_dir": "/Users/rain/Documents/New project/src-tauri/outputs/default-project/compress/2026-05-11_13-51-03",
+  "params": {
+    "allowResizeToTarget": false,
+    "allowUpscale": false,
+    "background": "#ffffff",
+    "cellHeight": 512,
+    "cellWidth": 512,
+    "cols": 3,
+    "fit": "contain",
+    "height": 1080,
+    "minQuality": 45,
+    "outputFormat": "original",
+    "padding": 3,
+    "percent": 100,
+    "prefix": "image",
+    "quality": 100,
+    "recursive": true,
+    "resizeMode": "width",
+    "rows": 3,
+    "sortBy": "input",
+    "startIndex": 1,
+    "targetKb": 400,
+    "width": 1080
+  },
+  "files": [
+    {
+      "input_path": "/Users/rain/Desktop/九图.png",
+      "output_path": null,
+      "status": "failed",
+      "error": "invalid task params: 最低质量 45 时仍为 475KB，无法压缩到 400KB。请允许改尺寸后再试。"
+    }
+  ]
+}
