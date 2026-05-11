@@ -377,6 +377,34 @@ export function BatchToolPanel({
         <div className="form-grid form-grid--spaced">
           <NumberField label="行数" value={params.rows} onChange={(rows) => updateParams({ rows })} />
           <NumberField label="列数" value={params.cols} onChange={(cols) => updateParams({ cols })} />
+          {taskType === "split" && (
+            <>
+              <label>
+                <span>处理分隔线</span>
+                <select
+                  value={params.splitLineMode}
+                  onChange={(event) => updateParams({ splitLineMode: event.target.value as BatchParams["splitLineMode"] })}
+                >
+                  <option value="none">不处理</option>
+                  <option value="black">黑线</option>
+                  <option value="white">白线</option>
+                  <option value="black_white">黑线和白线</option>
+                </select>
+              </label>
+              <NumberField label="分隔线宽 px" value={params.splitLineWidth} onChange={(splitLineWidth) => updateParams({ splitLineWidth })} />
+              <NumberField label="外边框宽 px" value={params.splitOuterBorder} onChange={(splitOuterBorder) => updateParams({ splitOuterBorder })} />
+              <label>
+                <span>输出方形单元</span>
+                <select
+                  value={params.splitForceSquare ? "true" : "false"}
+                  onChange={(event) => updateParams({ splitForceSquare: event.target.value === "true" })}
+                >
+                  <option value="true">开启</option>
+                  <option value="false">关闭</option>
+                </select>
+              </label>
+            </>
+          )}
           {taskType === "stitch" && (
             <>
               <NumberField label="单元宽度" value={params.cellWidth} onChange={(cellWidth) => updateParams({ cellWidth })} />

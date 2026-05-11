@@ -699,6 +699,19 @@ fn process_split(
     let cols = read_u32(params, "cols", 3).max(1);
     let output_format = read_string(params, "outputFormat", "original");
     let quality = read_u8(params, "quality", 82);
+    let line_mode = read_string(params, "splitLineMode", "none");
+    let remove_lines = line_mode != "none";
+    let line_width = if remove_lines {
+        read_u32(params, "splitLineWidth", 0)
+    } else {
+        0
+    };
+    let outer_border = if remove_lines {
+        read_u32(params, "splitOuterBorder", 0)
+    } else {
+        0
+    };
+    let force_square = read_bool(params, "splitForceSquare", true);
     let mut results = Vec::new();
 
     for input in input_paths {
@@ -711,25 +724,20 @@ fn process_split(
             fs::create_dir_all(&image_dir)?;
             let (width, height) = image.dimensions();
             let mut file_results = Vec::new();
+            let cells = compute_split_cells(width, height, rows, cols, line_width, outer_border, force_square);
 
-            for row in 0..rows {
-                for col in 0..cols {
-                    let x = col * width / cols;
-                    let y = row * height / rows;
-                    let next_x = if col + 1 == cols { width } else { (col + 1) * width / cols };
-                    let next_y = if row + 1 == rows { height } else { (row + 1) * height / rows };
-                    let cropped = image.crop_imm(x, y, next_x - x, next_y - y);
+            for cell in cells {
+                    let cropped = image.crop_imm(cell.x, cell.y, cell.width, cell.height);
                     let filename = format!(
                         "{}_r{}_c{}.{}",
                         stem,
-                        row + 1,
-                        col + 1,
+                        cell.row + 1,
+                        cell.col + 1,
                         extension_for_format(&format)
                     );
                     let output_path = unique_path(&image_dir.join(filename));
                     save_image(&cropped, &output_path, &format, quality)?;
                     file_results.push(success_result(input, &output_path));
-                }
             }
 
             Ok(file_results)
@@ -752,6 +760,98 @@ fn process_split(
     }
 
     Ok(results)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SplitCell {
+    row: u32,
+    col: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+fn compute_split_cells(
+    image_width: u32,
+    image_height: u32,
+    rows: u32,
+    cols: u32,
+    line_width: u32,
+    outer_border: u32,
+    force_square: bool,
+) -> Vec<SplitCell> {
+    let content_width = image_width.saturating_sub(outer_border.saturating_mul(2));
+    let content_height = image_height.saturating_sub(outer_border.saturating_mul(2));
+    let total_vertical_lines = line_width.saturating_mul(cols.saturating_sub(1));
+    let total_horizontal_lines = line_width.saturating_mul(rows.saturating_sub(1));
+    let cell_area_width = content_width.saturating_sub(total_vertical_lines);
+    let cell_area_height = content_height.saturating_sub(total_horizontal_lines);
+    let mut cells = Vec::new();
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = outer_border
+                + col.saturating_mul(line_width)
+                + col.saturating_mul(cell_area_width)
+                    / cols;
+            let y = outer_border
+                + row.saturating_mul(line_width)
+                + row.saturating_mul(cell_area_height)
+                    / rows;
+            let next_x = outer_border
+                + col.saturating_mul(line_width)
+                + (col + 1).saturating_mul(cell_area_width)
+                    / cols;
+            let next_y = outer_border
+                + row.saturating_mul(line_width)
+                + (row + 1).saturating_mul(cell_area_height)
+                    / rows;
+            let mut cell_x = x.min(image_width.saturating_sub(1));
+            let mut cell_y = y.min(image_height.saturating_sub(1));
+            let mut cell_width = next_x.saturating_sub(x).max(1);
+            let mut cell_height = next_y.saturating_sub(y).max(1);
+
+            if col + 1 == cols {
+                cell_width = image_width
+                    .saturating_sub(outer_border)
+                    .saturating_sub(cell_x)
+                    .max(1);
+            }
+            if row + 1 == rows {
+                cell_height = image_height
+                    .saturating_sub(outer_border)
+                    .saturating_sub(cell_y)
+                    .max(1);
+            }
+
+            if force_square {
+                let side = cell_width.min(cell_height).max(1);
+                cell_x += (cell_width - side) / 2;
+                cell_y += (cell_height - side) / 2;
+                cell_width = side;
+                cell_height = side;
+            }
+
+            if cell_x + cell_width > image_width {
+                cell_width = image_width.saturating_sub(cell_x).max(1);
+            }
+            if cell_y + cell_height > image_height {
+                cell_height = image_height.saturating_sub(cell_y).max(1);
+            }
+
+            cells.push(SplitCell {
+                row,
+                col,
+                x: cell_x,
+                y: cell_y,
+                width: cell_width,
+                height: cell_height,
+            });
+        }
+    }
+
+    cells
 }
 
 fn process_stitch(
@@ -1602,6 +1702,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn split_removes_grid_lines_and_outputs_square_cells() {
+        let temp = tempdir().expect("temp dir");
+        let input_dir = temp.path().join("inputs");
+        let output_base = temp.path().join("outputs");
+        fs::create_dir_all(&input_dir).expect("input dir");
+        let grid = input_dir.join("grid.png");
+        create_grid_image(&grid, 3, 3, 96, 8, 6);
+
+        let report = run_test_task(
+            TaskType::Split,
+            &[grid.to_string_lossy().to_string()],
+            &output_base,
+            serde_json::json!({
+                "recursive": true,
+                "rows": 3,
+                "cols": 3,
+                "outputFormat": "png",
+                "splitLineMode": "black",
+                "splitLineWidth": 8,
+                "splitOuterBorder": 6,
+                "splitForceSquare": true
+            }),
+        );
+
+        assert_eq!(report.success_count, 9);
+        let first = image::open(
+            Path::new(&report.output_dir)
+                .join("success")
+                .join("grid")
+                .join("grid_r1_c1.png"),
+        )
+        .expect("split image");
+        assert_eq!(first.dimensions(), (96, 96));
+    }
+
     fn run_test_task(
         task_type: TaskType,
         inputs: &[String],
@@ -1643,5 +1779,35 @@ mod tests {
         }
         let image = DynamicImage::ImageRgba8(image);
         save_image(&image, path, &ImageFormat::Png, 82).expect("save noisy png");
+    }
+
+    fn create_grid_image(path: &Path, rows: u32, cols: u32, cell: u32, line: u32, border: u32) {
+        let width = cols * cell + (cols - 1) * line + border * 2;
+        let height = rows * cell + (rows - 1) * line + border * 2;
+        let mut image = ImageBuffer::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+
+        for row in 0..rows {
+            for col in 0..cols {
+                let x0 = border + col * (cell + line);
+                let y0 = border + row * (cell + line);
+                for y in y0..(y0 + cell) {
+                    for x in x0..(x0 + cell) {
+                        image.put_pixel(
+                            x,
+                            y,
+                            Rgba([
+                                (40 + row * 40) as u8,
+                                (80 + col * 40) as u8,
+                                180,
+                                255,
+                            ]),
+                        );
+                    }
+                }
+            }
+        }
+
+        save_image(&DynamicImage::ImageRgba8(image), path, &ImageFormat::Png, 82)
+            .expect("save grid image");
     }
 }
