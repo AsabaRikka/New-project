@@ -1752,10 +1752,6 @@ fn request_responses_analysis(
     prompt: &str,
     image_data_url: &str,
 ) -> AppResult<serde_json::Value> {
-    let url = format!(
-        "{}/responses",
-        ai_context.config.base_url.trim_end_matches('/')
-    );
     let body = json!({
         "model": ai_context.config.vision_model,
         "input": [
@@ -1785,14 +1781,24 @@ fn request_responses_analysis(
             }
         }
     });
-    let response: serde_json::Value = client
-        .post(url)
-        .bearer_auth(&ai_context.api_key)
-        .json(&body)
-        .send()?
-        .error_for_status()?
-        .json()?;
-    parse_model_json_output(&response)
+    let mut last_error: Option<AppError> = None;
+    for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
+        let url = join_api_endpoint(&base_url, "responses");
+        match client
+            .post(url)
+            .bearer_auth(&ai_context.api_key)
+            .json(&body)
+            .send()
+            .and_then(|response| response.error_for_status())
+        {
+            Ok(response) => {
+                let response: serde_json::Value = response.json()?;
+                return parse_model_json_output(&response);
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
 }
 
 fn request_chat_analysis(
@@ -1801,10 +1807,6 @@ fn request_chat_analysis(
     prompt: &str,
     image_data_url: &str,
 ) -> AppResult<serde_json::Value> {
-    let url = format!(
-        "{}/chat/completions",
-        ai_context.config.base_url.trim_end_matches('/')
-    );
     let body = json!({
         "model": ai_context.config.vision_model,
         "messages": [
@@ -1822,14 +1824,24 @@ fn request_chat_analysis(
         ],
         "response_format": { "type": "json_object" }
     });
-    let response: serde_json::Value = client
-        .post(url)
-        .bearer_auth(&ai_context.api_key)
-        .json(&body)
-        .send()?
-        .error_for_status()?
-        .json()?;
-    parse_model_json_output(&response)
+    let mut last_error: Option<AppError> = None;
+    for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
+        let url = join_api_endpoint(&base_url, "chat/completions");
+        match client
+            .post(url)
+            .bearer_auth(&ai_context.api_key)
+            .json(&body)
+            .send()
+            .and_then(|response| response.error_for_status())
+        {
+            Ok(response) => {
+                let response: serde_json::Value = response.json()?;
+                return parse_model_json_output(&response);
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
 }
 
 fn run_ai_connection_test(
@@ -1855,22 +1867,38 @@ fn test_text_model(
     client: &reqwest::blocking::Client,
     context: &AiTaskContext,
 ) -> AiConnectionTestResult {
-    let url = format!(
-        "{}/responses",
-        context.config.base_url.trim_end_matches('/')
-    );
-    let body = json!({
+    let responses_body = json!({
         "model": context.config.text_model,
         "input": "Return exactly: ok"
     });
-    parse_test_response(
+    let chat_body = json!({
+        "model": context.config.text_model,
+        "messages": [
+            { "role": "user", "content": "Return exactly: ok" }
+        ],
+        "max_tokens": 8
+    });
+    let mut attempts = Vec::new();
+    for base_url in candidate_api_base_urls(&context.config.base_url) {
+        attempts.push((
+            "responses".to_string(),
+            join_api_endpoint(&base_url, "responses"),
+            responses_body.clone(),
+        ));
+    }
+    for base_url in candidate_api_base_urls(&context.config.base_url) {
+        attempts.push((
+            "chat.completions".to_string(),
+            join_api_endpoint(&base_url, "chat/completions"),
+            chat_body.clone(),
+        ));
+    }
+    run_test_attempts(
         "text",
         &context.config.text_model,
-        client
-            .post(url)
-            .bearer_auth(&context.api_key)
-            .json(&body)
-            .send(),
+        client,
+        &context.api_key,
+        attempts,
     )
 }
 
@@ -1878,11 +1906,7 @@ fn test_vision_model(
     client: &reqwest::blocking::Client,
     context: &AiTaskContext,
 ) -> AiConnectionTestResult {
-    let url = format!(
-        "{}/responses",
-        context.config.base_url.trim_end_matches('/')
-    );
-    let body = json!({
+    let responses_body = json!({
         "model": context.config.vision_model,
         "input": [
             {
@@ -1894,14 +1918,40 @@ fn test_vision_model(
             }
         ]
     });
-    parse_test_response(
+    let chat_body = json!({
+        "model": context.config.vision_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Reply with one short word describing the image color." },
+                    { "type": "image_url", "image_url": { "url": test_png_data_url() } }
+                ]
+            }
+        ],
+        "max_tokens": 8
+    });
+    let mut attempts = Vec::new();
+    for base_url in candidate_api_base_urls(&context.config.base_url) {
+        attempts.push((
+            "responses".to_string(),
+            join_api_endpoint(&base_url, "responses"),
+            responses_body.clone(),
+        ));
+    }
+    for base_url in candidate_api_base_urls(&context.config.base_url) {
+        attempts.push((
+            "chat.completions".to_string(),
+            join_api_endpoint(&base_url, "chat/completions"),
+            chat_body.clone(),
+        ));
+    }
+    run_test_attempts(
         "vision",
         &context.config.vision_model,
-        client
-            .post(url)
-            .bearer_auth(&context.api_key)
-            .json(&body)
-            .send(),
+        client,
+        &context.api_key,
+        attempts,
     )
 }
 
@@ -1909,30 +1959,87 @@ fn test_image_model(
     client: &reqwest::blocking::Client,
     context: &AiTaskContext,
 ) -> AiConnectionTestResult {
-    let url = format!(
-        "{}/images/generations",
-        context.config.base_url.trim_end_matches('/')
-    );
     let body = json!({
         "model": context.config.image_model,
         "prompt": "A tiny plain green square icon",
         "size": "1024x1024",
         "n": 1
     });
-    parse_test_response(
+    let attempts = candidate_api_base_urls(&context.config.base_url)
+        .into_iter()
+        .map(|base_url| {
+            (
+                "images.generations".to_string(),
+                join_api_endpoint(&base_url, "images/generations"),
+                body.clone(),
+            )
+        })
+        .collect();
+    run_test_attempts(
         "image",
         &context.config.image_model,
-        client
-            .post(url)
-            .bearer_auth(&context.api_key)
-            .json(&body)
-            .send(),
+        client,
+        &context.api_key,
+        attempts,
     )
+}
+
+fn run_test_attempts(
+    target: &str,
+    model: &str,
+    client: &reqwest::blocking::Client,
+    api_key: &str,
+    attempts: Vec<(String, String, serde_json::Value)>,
+) -> AiConnectionTestResult {
+    if attempts.is_empty() {
+        return AiConnectionTestResult {
+            target: target.to_string(),
+            model: model.to_string(),
+            ok: false,
+            status: None,
+            message: "API Base URL 不能为空".to_string(),
+        };
+    }
+
+    let mut failures = Vec::new();
+    let mut last_status = None;
+    for (label, url, body) in attempts {
+        let result = parse_test_response(
+            target,
+            model,
+            &label,
+            &url,
+            client.post(&url).bearer_auth(api_key).json(&body).send(),
+        );
+        if result.ok {
+            return result;
+        }
+        last_status = result.status;
+        failures.push(format!("{} {}: {}", label, url, result.message));
+    }
+
+    AiConnectionTestResult {
+        target: target.to_string(),
+        model: model.to_string(),
+        ok: false,
+        status: last_status,
+        message: failures
+            .into_iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("；"),
+    }
 }
 
 fn parse_test_response(
     target: &str,
     model: &str,
+    endpoint_label: &str,
+    url: &str,
     response: Result<reqwest::blocking::Response, reqwest::Error>,
 ) -> AiConnectionTestResult {
     match response {
@@ -1944,7 +2051,7 @@ fn parse_test_response(
                     model: model.to_string(),
                     ok: true,
                     status: Some(status.as_u16()),
-                    message: "联通成功".to_string(),
+                    message: format!("联通成功：{} {}", endpoint_label, url),
                 }
             } else {
                 let message = response
@@ -1955,7 +2062,11 @@ fn parse_test_response(
                     model: model.to_string(),
                     ok: false,
                     status: Some(status.as_u16()),
-                    message: summarize_error_message(&message),
+                    message: format!(
+                        "HTTP {} {}",
+                        status.as_u16(),
+                        summarize_error_message(&message)
+                    ),
                 }
             }
         }
@@ -1967,6 +2078,27 @@ fn parse_test_response(
             message: error.to_string(),
         },
     }
+}
+
+fn candidate_api_base_urls(base_url: &str) -> Vec<String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut urls = vec![trimmed.to_string()];
+    if !trimmed.ends_with("/v1") {
+        urls.push(format!("{}/v1", trimmed));
+    }
+    urls
+}
+
+fn join_api_endpoint(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 fn summarize_error_message(message: &str) -> String {

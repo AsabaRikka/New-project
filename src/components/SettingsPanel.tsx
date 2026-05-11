@@ -44,7 +44,7 @@ export function SettingsPanel({ config, onChange, onSave }: SettingsPanelProps) 
       const failed = results.filter((result) => !result.ok);
       setSecretStatus(failed.length === 0 ? "模型联通测试通过" : `模型联通失败 ${failed.length} 项`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "联通测试失败";
+      const message = typeof error === "string" ? error : error instanceof Error ? error.message : "联通测试失败";
       setTestResults([
         {
           target,
