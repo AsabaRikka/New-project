@@ -427,7 +427,7 @@ fn create_task(
         },
     );
 
-    if request.task_type == TaskType::AiAnalyze {
+    if is_ai_protocol_task(&request.task_type) {
         let app_handle = app_handle.clone();
         let background_id = id.clone();
         let background_request = request.clone();
@@ -641,7 +641,7 @@ fn run_background_task(
                     current_file: None,
                     output_dir: Some(report.output_dir.clone()),
                     message: format!(
-                        "后台分析完成：成功 {}，失败 {}",
+                        "后台 AI 任务完成：成功 {}，失败 {}",
                         report.success_count, report.failed_count
                     ),
                 },
@@ -695,6 +695,16 @@ fn mark_background_task_failed(
         },
     );
     Ok(())
+}
+
+fn is_ai_protocol_task(task_type: &TaskType) -> bool {
+    matches!(
+        task_type,
+        TaskType::AiAnalyze
+            | TaskType::AiGenerateCopy
+            | TaskType::AiGenerateTitle
+            | TaskType::AiGenerateImage
+    )
 }
 
 #[tauri::command]
@@ -855,19 +865,34 @@ fn execute_task(
             &mut tracker,
             ai_context.ok_or_else(|| AppError::InvalidParams("请先配置 API Key".to_string()))?,
         )?,
-        _ => {
-            return Err(AppError::InvalidParams(
-                "当前阶段尚未支持此任务类型".to_string(),
-            ));
+        TaskType::AiGenerateCopy | TaskType::AiGenerateTitle | TaskType::AiGenerateImage => {
+            process_ai_generation_task(
+                input_paths,
+                &success_dir,
+                &report_dir,
+                &request.params,
+                &mut tracker,
+                ai_context
+                    .ok_or_else(|| AppError::InvalidParams("请先配置 API Key".to_string()))?,
+                &request.task_type,
+            )?
         }
     };
 
-    if request.task_type == TaskType::AiAnalyze {
+    if is_ai_protocol_task(&request.task_type) {
         let state =
             state.ok_or_else(|| AppError::InvalidParams("AI 结果需要数据库状态".to_string()))?;
         let model = ai_context
-            .map(|context| context.config.vision_model.as_str())
-            .unwrap_or("vision");
+            .map(|context| match request.task_type {
+                TaskType::AiAnalyze | TaskType::AiGenerateImage => {
+                    context.config.vision_model.as_str()
+                }
+                TaskType::AiGenerateCopy | TaskType::AiGenerateTitle => {
+                    context.config.text_model.as_str()
+                }
+                _ => "ai",
+            })
+            .unwrap_or("ai");
         persist_ai_results(state, task_id, model, &files)?;
     }
 
@@ -1898,6 +1923,13 @@ impl AiTaskContext {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AiGenerationKind {
+    Copy,
+    Title,
+    Variation,
+}
+
 fn process_ai_analyze(
     input_paths: &[PathBuf],
     output_dir: &Path,
@@ -1945,6 +1977,74 @@ fn process_ai_analyze(
     Ok(results)
 }
 
+fn process_ai_generation_task(
+    input_paths: &[PathBuf],
+    output_dir: &Path,
+    report_dir: &Path,
+    params: &serde_json::Value,
+    tracker: &mut ProgressTracker<'_>,
+    ai_context: &AiTaskContext,
+    task_type: &TaskType,
+) -> AppResult<Vec<FileResult>> {
+    let kind = match task_type {
+        TaskType::AiGenerateCopy => AiGenerationKind::Copy,
+        TaskType::AiGenerateTitle => AiGenerationKind::Title,
+        TaskType::AiGenerateImage => AiGenerationKind::Variation,
+        _ => {
+            return Err(AppError::InvalidParams(
+                "不支持的 AI 生成任务类型".to_string(),
+            ));
+        }
+    };
+    let sorted = sort_paths(input_paths, &read_string(params, "sortBy", "input"));
+    let language = read_string(params, "aiLanguage", "zh-CN");
+    let platform = read_string(params, "aiPlatform", "通用广告");
+    let product_context = read_string(params, "aiProductContext", "");
+    let count = read_u32(params, "aiGenerateCount", 5).clamp(1, 20);
+    let tone = read_string(params, "aiCopyTone", "高转化");
+    let audience = read_string(params, "aiTargetAudience", "泛广告受众");
+    let mut results = Vec::new();
+
+    fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(report_dir)?;
+
+    for input in sorted {
+        tracker.start_file(&input);
+        let result = (|| -> AppResult<FileResult> {
+            let generated = generate_ai_protocol_asset(
+                &input,
+                ai_context,
+                kind,
+                &language,
+                &platform,
+                &product_context,
+                &tone,
+                &audience,
+                count,
+            )?;
+            let original_output = unique_path(&output_dir.join(file_name(&input)));
+            fs::copy(&input, &original_output)?;
+
+            let suffix = match kind {
+                AiGenerationKind::Copy => "copy",
+                AiGenerationKind::Title => "titles",
+                AiGenerationKind::Variation => "variations",
+            };
+            let output_path =
+                unique_path(&report_dir.join(format!("{}_{}.json", file_stem(&input), suffix)));
+            fs::write(&output_path, serde_json::to_string_pretty(&generated)?)?;
+
+            Ok(success_result(&input, &output_path))
+        })();
+        let result = result.unwrap_or_else(|error| failed_result(&input, error));
+        tracker.finish_file(&result);
+        results.push(result);
+    }
+
+    write_ai_summary_files(report_dir, &results)?;
+    Ok(results)
+}
+
 fn analyze_ad_creative_image(
     input: &Path,
     ai_context: &AiTaskContext,
@@ -1968,11 +2068,106 @@ fn analyze_ad_creative_image(
     }
 }
 
+fn generate_ai_protocol_asset(
+    input: &Path,
+    ai_context: &AiTaskContext,
+    kind: AiGenerationKind,
+    language: &str,
+    platform: &str,
+    product_context: &str,
+    tone: &str,
+    audience: &str,
+    count: u32,
+) -> AppResult<serde_json::Value> {
+    let image_data_url = image_data_url(input)?;
+    let prompt = build_ai_generation_prompt(
+        input,
+        kind,
+        language,
+        platform,
+        product_context,
+        tone,
+        audience,
+        count,
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            ai_context.config.timeout_seconds.max(10),
+        ))
+        .build()?;
+    let schema = ai_generation_schema(kind);
+    let schema_name = match kind {
+        AiGenerationKind::Copy => "ad_copy_generation",
+        AiGenerationKind::Title => "ad_title_generation",
+        AiGenerationKind::Variation => "creative_variation_prompts",
+    };
+    let system_prompt = match kind {
+        AiGenerationKind::Copy => {
+            "你是资深广告文案策略师。只输出符合 schema 的 JSON，不要输出 Markdown。"
+        }
+        AiGenerationKind::Title => {
+            "你是高转化广告标题专家。只输出符合 schema 的 JSON，不要输出 Markdown。"
+        }
+        AiGenerationKind::Variation => {
+            "你是图片创意裂变与提示词工程专家。只输出符合 schema 的 JSON，不要输出 Markdown。"
+        }
+    };
+
+    let generated = match request_responses_json(
+        &client,
+        ai_context,
+        &prompt,
+        &image_data_url,
+        system_prompt,
+        schema_name,
+        schema.clone(),
+    ) {
+        Ok(value) => Ok(value),
+        Err(_) => request_chat_json(&client, ai_context, &prompt, &image_data_url, system_prompt),
+    }?;
+    Ok(normalize_ai_generation_result(generated, kind))
+}
+
+fn normalize_ai_generation_result(
+    mut value: serde_json::Value,
+    kind: AiGenerationKind,
+) -> serde_json::Value {
+    let expected_type = match kind {
+        AiGenerationKind::Copy => "ad_copy_generation",
+        AiGenerationKind::Title => "ad_title_generation",
+        AiGenerationKind::Variation => "creative_variation_prompts",
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert("result_type".to_string(), json!(expected_type));
+    }
+    value
+}
+
 fn request_responses_analysis(
     client: &reqwest::blocking::Client,
     ai_context: &AiTaskContext,
     prompt: &str,
     image_data_url: &str,
+) -> AppResult<serde_json::Value> {
+    request_responses_json(
+        client,
+        ai_context,
+        prompt,
+        image_data_url,
+        "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。",
+        "ad_creative_analysis",
+        ad_analysis_schema(),
+    )
+}
+
+fn request_responses_json(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+    system_prompt: &str,
+    schema_name: &str,
+    schema: serde_json::Value,
 ) -> AppResult<serde_json::Value> {
     let body = json!({
         "model": ai_context.config.vision_model,
@@ -1982,7 +2177,7 @@ fn request_responses_analysis(
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。"
+                        "text": system_prompt
                     }
                 ]
             },
@@ -1997,9 +2192,9 @@ fn request_responses_analysis(
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "ad_creative_analysis",
+                "name": schema_name,
                 "strict": true,
-                "schema": ad_analysis_schema()
+                "schema": schema
             }
         }
     });
@@ -2029,12 +2224,28 @@ fn request_chat_analysis(
     prompt: &str,
     image_data_url: &str,
 ) -> AppResult<serde_json::Value> {
+    request_chat_json(
+        client,
+        ai_context,
+        prompt,
+        image_data_url,
+        "你是资深广告素材策略师。只输出 JSON，不要输出 Markdown。",
+    )
+}
+
+fn request_chat_json(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+    system_prompt: &str,
+) -> AppResult<serde_json::Value> {
     let body = json!({
         "model": ai_context.config.vision_model,
         "messages": [
             {
                 "role": "system",
-                "content": "你是资深广告素材策略师。只输出 JSON，不要输出 Markdown。"
+                "content": system_prompt
             },
             {
                 "role": "user",
@@ -2356,6 +2567,128 @@ fn build_ad_analysis_prompt(
         file_name(input),
         prompt_examples
     )
+}
+
+fn build_ai_generation_prompt(
+    input: &Path,
+    kind: AiGenerationKind,
+    language: &str,
+    platform: &str,
+    product_context: &str,
+    tone: &str,
+    audience: &str,
+    count: u32,
+) -> String {
+    let file = file_name(input);
+    match kind {
+        AiGenerationKind::Copy => format!(
+            "请基于这张广告图片生成匹配广告文案。输出语言：{language}。平台/投放场景：{platform}。语气：{tone}。目标人群：{audience}。产品或业务补充：{product_context}。文件名：{file}。请生成 {count} 组文案，每组包含主文案、短文案、CTA、卖点、适用场景、风险提示和评分。"
+        ),
+        AiGenerationKind::Title => format!(
+            "请基于这张广告图片生成匹配广告标题。输出语言：{language}。平台/投放场景：{platform}。语气：{tone}。目标人群：{audience}。产品或业务补充：{product_context}。文件名：{file}。请生成 {count} 个广告标题，包含标题、角度、适用平台、字符数、CTA 倾向、风险提示和评分。"
+        ),
+        AiGenerationKind::Variation => format!(
+            "请基于这张广告图片进行创意裂变与提示词工程。输出语言：{language}。平台/投放场景：{platform}。目标人群：{audience}。产品或业务补充：{product_context}。文件名：{file}。请提取主体、场景、风格、构图、色彩、促销角度、目标人群等裂变变量，并生成 {count} 组可复用图片裂变提示词。每组需要包含裂变类型、提示词、负向提示词、推荐尺寸、变化点、复用建议和评分。"
+        ),
+    }
+}
+
+fn ai_generation_schema(kind: AiGenerationKind) -> serde_json::Value {
+    match kind {
+        AiGenerationKind::Copy => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result_type", "summary", "items"],
+            "properties": {
+                "result_type": { "type": "string" },
+                "summary": { "type": "string" },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["main_copy", "short_copy", "cta", "selling_points", "scenario", "risk_notes", "score"],
+                        "properties": {
+                            "main_copy": { "type": "string" },
+                            "short_copy": { "type": "string" },
+                            "cta": { "type": "string" },
+                            "selling_points": { "type": "array", "items": { "type": "string" } },
+                            "scenario": { "type": "string" },
+                            "risk_notes": { "type": "array", "items": { "type": "string" } },
+                            "score": { "type": "number" }
+                        }
+                    }
+                }
+            }
+        }),
+        AiGenerationKind::Title => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result_type", "summary", "items"],
+            "properties": {
+                "result_type": { "type": "string" },
+                "summary": { "type": "string" },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["title", "angle", "platform_fit", "character_count", "cta_intent", "risk_notes", "score"],
+                        "properties": {
+                            "title": { "type": "string" },
+                            "angle": { "type": "string" },
+                            "platform_fit": { "type": "string" },
+                            "character_count": { "type": "number" },
+                            "cta_intent": { "type": "string" },
+                            "risk_notes": { "type": "array", "items": { "type": "string" } },
+                            "score": { "type": "number" }
+                        }
+                    }
+                }
+            }
+        }),
+        AiGenerationKind::Variation => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["result_type", "summary", "variation_variables", "items"],
+            "properties": {
+                "result_type": { "type": "string" },
+                "summary": { "type": "string" },
+                "variation_variables": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["subjects", "scenes", "styles", "compositions", "colors", "promotion_angles", "audiences"],
+                    "properties": {
+                        "subjects": { "type": "array", "items": { "type": "string" } },
+                        "scenes": { "type": "array", "items": { "type": "string" } },
+                        "styles": { "type": "array", "items": { "type": "string" } },
+                        "compositions": { "type": "array", "items": { "type": "string" } },
+                        "colors": { "type": "array", "items": { "type": "string" } },
+                        "promotion_angles": { "type": "array", "items": { "type": "string" } },
+                        "audiences": { "type": "array", "items": { "type": "string" } }
+                    }
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["variation_type", "prompt", "negative_prompt", "size", "changes", "reuse_notes", "score", "favorite"],
+                        "properties": {
+                            "variation_type": { "type": "string" },
+                            "prompt": { "type": "string" },
+                            "negative_prompt": { "type": "string" },
+                            "size": { "type": "string" },
+                            "changes": { "type": "array", "items": { "type": "string" } },
+                            "reuse_notes": { "type": "string" },
+                            "score": { "type": "number" },
+                            "favorite": { "type": "boolean" }
+                        }
+                    }
+                }
+            }
+        }),
+    }
 }
 
 fn ad_analysis_schema() -> serde_json::Value {

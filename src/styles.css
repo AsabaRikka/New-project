@@ -402,6 +402,32 @@ code {
   line-height: 1.5;
 }
 
+.ai-result-items {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-result-item {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  background: #ffffff;
+  border: 1px solid #e5ebf0;
+  border-radius: 6px;
+}
+
+.ai-result-item strong,
+.ai-result-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-result-item span {
+  color: #5f6f81;
+  font-size: 12px;
+}
+
 .ai-result-card__meta {
   display: flex;
   flex-wrap: wrap;

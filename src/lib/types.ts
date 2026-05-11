@@ -125,6 +125,9 @@ export interface BatchParams {
   aiPlatform: string;
   aiProductContext: string;
   aiPromptExampleCount: number;
+  aiGenerateCount: number;
+  aiCopyTone: string;
+  aiTargetAudience: string;
 }
 
 export interface TaskRecord {
@@ -164,6 +167,9 @@ export interface AiResultRecord {
     };
     extracted_prompt?: string;
     prompt_examples?: string[];
+    result_type?: string;
+    items?: Array<Record<string, unknown>>;
+    variation_variables?: Record<string, string[]>;
     [key: string]: unknown;
   };
   created_at: string;

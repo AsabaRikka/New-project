@@ -60,6 +60,9 @@ export const batchTaskTypes: Array<{ value: TaskType; label: string }> = [
 
 export const aiTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "ai_analyze", label: "AI 广告分析" },
+  { value: "ai_generate_copy", label: "图片匹配文案" },
+  { value: "ai_generate_title", label: "图片匹配标题" },
+  { value: "ai_generate_image", label: "创意裂变提示词" },
 ];
 
 const allTaskTypes = [...batchTaskTypes, ...aiTaskTypes];
@@ -617,7 +620,7 @@ export function BatchToolPanel({
         </div>
       )}
 
-      {taskType === "ai_analyze" && (
+      {(taskType === "ai_analyze" || taskType === "ai_generate_copy" || taskType === "ai_generate_title" || taskType === "ai_generate_image") && (
         <div className="form-grid form-grid--spaced">
           <label>
             <span>输出语言</span>
@@ -637,13 +640,33 @@ export function BatchToolPanel({
               <option value="短视频封面">短视频封面</option>
             </select>
           </label>
-          <NumberField label="提示词示例数" value={params.aiPromptExampleCount} onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })} />
+          {taskType === "ai_analyze" ? (
+            <NumberField label="提示词示例数" value={params.aiPromptExampleCount} onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })} />
+          ) : (
+            <>
+              <NumberField label={taskType === "ai_generate_image" ? "裂变提示词数量" : "生成数量"} value={params.aiGenerateCount} onChange={(aiGenerateCount) => updateParams({ aiGenerateCount })} />
+              <label>
+                <span>语气/风格</span>
+                <select value={params.aiCopyTone} onChange={(event) => updateParams({ aiCopyTone: event.target.value })}>
+                  <option value="高转化">高转化</option>
+                  <option value="年轻活泼">年轻活泼</option>
+                  <option value="专业可信">专业可信</option>
+                  <option value="强促销">强促销</option>
+                  <option value="轻奢质感">轻奢质感</option>
+                </select>
+              </label>
+              <label>
+                <span>目标人群</span>
+                <input value={params.aiTargetAudience} onChange={(event) => updateParams({ aiTargetAudience: event.target.value })} placeholder="例如：新手妈妈、二次元玩家、通勤白领" />
+              </label>
+            </>
+          )}
           <label className="form-grid__full">
             <span>产品/业务补充</span>
             <textarea
               value={params.aiProductContext}
               onChange={(event) => updateParams({ aiProductContext: event.target.value })}
-              placeholder="例如：夏季女装、价格优势、目标人群、投放渠道限制"
+              placeholder="例如：夏季女装、价格优势、目标人群、投放渠道限制、品牌禁用词"
             />
           </label>
         </div>

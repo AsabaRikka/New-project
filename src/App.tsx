@@ -30,6 +30,9 @@ const taskTypes: Array<{ type: TaskType; label: string; description: string }> =
   { type: "stitch", label: "图片拼接", description: "网格拼接与留白策略将在 Phase 1 实现" },
   { type: "organize", label: "文件夹整理", description: "把处理后的图片按任务结果归档整理" },
   { type: "ai_analyze", label: "AI 广告分析", description: "视觉素材分析、爆点提取、提示词提取与示例生成" },
+  { type: "ai_generate_copy", label: "图片匹配文案生成", description: "基于图片生成多组匹配广告文案与 CTA" },
+  { type: "ai_generate_title", label: "图片匹配标题生成", description: "基于图片生成多组广告标题与投放角度" },
+  { type: "ai_generate_image", label: "图片创意裂变", description: "提取裂变变量并生成可复用图片提示词" },
 ];
 
 const defaultBatchParams: BatchParams = {
@@ -64,6 +67,9 @@ const defaultBatchParams: BatchParams = {
   aiPlatform: "通用广告",
   aiProductContext: "",
   aiPromptExampleCount: 5,
+  aiGenerateCount: 5,
+  aiCopyTone: "高转化",
+  aiTargetAudience: "泛广告受众",
 };
 
 const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
@@ -90,6 +96,7 @@ export function App() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [aiResults, setAiResults] = useState<AiResultRecord[]>([]);
   const [selectedTaskType, setSelectedTaskType] = useState<TaskType>("rename");
+  const [selectedAiTaskType, setSelectedAiTaskType] = useState<TaskType>("ai_analyze");
   const [executionMode, setExecutionMode] = useState<TaskExecutionMode>("single");
   const [pipelineSteps, setPipelineSteps] = useState<TaskPipelineStep[]>([]);
   const [favoriteTasks, setFavoriteTasks] = useState<FavoriteTask[]>([]);
@@ -161,7 +168,7 @@ export function App() {
   }
 
   async function handleRunAiTask() {
-    return runTaskRequest("ai_analyze", "single", [], `${projectName}-ai`, "正在提交 AI 分析...");
+    return runTaskRequest(selectedAiTaskType, "single", [], `${projectName}-${selectedAiTaskType}`, "正在提交 AI 任务...");
   }
 
   async function runTaskRequest(
@@ -256,7 +263,7 @@ export function App() {
 
   async function handleCreatePreviewTask() {
     const result = await createTask({
-      task_type: activeView === "ai" ? "ai_analyze" : selectedBatchTaskType,
+      task_type: activeView === "ai" ? selectedAiTaskType : selectedBatchTaskType,
       inputs: [],
       params: {},
       output_rule: {
@@ -410,7 +417,7 @@ export function App() {
           <BatchToolPanel
             projectName={projectName}
             outputDir={outputDir}
-            taskType="ai_analyze"
+            taskType={selectedAiTaskType}
             executionMode="single"
             pipelineSteps={[]}
             favoriteTasks={[]}
@@ -420,7 +427,7 @@ export function App() {
             progress={progress}
             onProjectNameChange={setProjectName}
             onOutputDirChange={setOutputDir}
-            onTaskTypeChange={() => undefined}
+            onTaskTypeChange={setSelectedAiTaskType}
             onExecutionModeChange={() => undefined}
             onPipelineStepsChange={() => undefined}
             onSaveFavoriteTask={() => undefined}
@@ -429,12 +436,12 @@ export function App() {
             onInputsChange={setInputs}
             onParamsChange={setBatchParams}
             onRun={handleRunAiTask}
-            title="AI 广告分析"
-            eyebrow="Phase 2"
+            title="AI 创意协议工作台"
+            eyebrow="Phase 2-4"
             taskTypes={aiTaskTypes}
             hideFavorites
             hideExecutionMode
-            runLabel="提交后台分析"
+            runLabel="提交后台任务"
             runningLabel="提交中..."
           />
 
@@ -442,7 +449,7 @@ export function App() {
           <TaskCenter tasks={tasks} />
           <AiResultsPanel results={aiResults} />
           <ProtocolPanel
-            selectedTask={taskTypes.find((task) => task.type === "ai_analyze") ?? selectedTask}
+            selectedTask={taskTypes.find((task) => task.type === selectedAiTaskType) ?? selectedTask}
             executionMode="single"
             pipelineSteps={[]}
             inputsCount={inputs.length}
