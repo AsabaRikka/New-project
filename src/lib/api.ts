@@ -74,16 +74,5 @@ export async function listTasks(): Promise<TaskRecord[]> {
 }
 
 export async function createTask(request: TaskRequest): Promise<TaskResult> {
-  if (!isTauriRuntime) {
-    return {
-      task_id: crypto.randomUUID(),
-      status: "pending",
-      success_count: 0,
-      failed_count: 0,
-      output_dir: request.output_rule.output_dir,
-      errors: [],
-    };
-  }
-
   return invoke<TaskResult>("create_task", { request });
 }

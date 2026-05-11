@@ -57,6 +57,34 @@ export interface TaskResult {
   errors: string[];
 }
 
+export type SortBy = "input" | "filename" | "modified" | "created";
+export type FitMode = "contain" | "cover" | "stretch";
+export type OutputFormat = "original" | "jpg" | "png" | "webp";
+
+export interface BatchParams {
+  recursive: boolean;
+  sortBy: SortBy;
+  prefix: string;
+  suffix: string;
+  startIndex: number;
+  padding: number;
+  resizeMode: "width" | "height" | "fixed" | "percent";
+  width: number;
+  height: number;
+  percent: number;
+  fit: FitMode;
+  allowUpscale: boolean;
+  quality: number;
+  minQuality: number;
+  targetKb: number | null;
+  outputFormat: OutputFormat;
+  rows: number;
+  cols: number;
+  cellWidth: number;
+  cellHeight: number;
+  background: string;
+}
+
 export interface TaskRecord {
   id: string;
   task_type: TaskType;

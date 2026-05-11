@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
+import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import { createTask, getAppConfig, listTasks, saveAppConfig } from "./lib/api";
-import type { AppConfig, TaskRecord, TaskType } from "./lib/types";
+import type { AppConfig, BatchParams, TaskRecord, TaskType } from "./lib/types";
+import { BatchToolPanel } from "./components/BatchToolPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
 
@@ -14,18 +16,47 @@ const taskTypes: Array<{ type: TaskType; label: string; description: string }> =
   { type: "ai_analyze", label: "AI 广告分析", description: "OpenAI 协议层已预留，Phase 2 接入" },
 ];
 
+const defaultBatchParams: BatchParams = {
+  recursive: true,
+  sortBy: "input",
+  prefix: "image",
+  suffix: "",
+  startIndex: 1,
+  padding: 3,
+  resizeMode: "width",
+  width: 1080,
+  height: 1080,
+  percent: 100,
+  fit: "contain",
+  allowUpscale: false,
+  quality: 82,
+  minQuality: 45,
+  targetKb: null,
+  outputFormat: "original",
+  rows: 3,
+  cols: 3,
+  cellWidth: 512,
+  cellHeight: 512,
+  background: "#ffffff",
+};
+
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskType, setSelectedTaskType] = useState<TaskType>("rename");
   const [projectName, setProjectName] = useState("default-project");
+  const [outputDir, setOutputDir] = useState("");
+  const [inputs, setInputs] = useState<string[]>([]);
+  const [batchParams, setBatchParams] = useState<BatchParams>(defaultBatchParams);
+  const [isRunning, setIsRunning] = useState(false);
   const [statusMessage, setStatusMessage] = useState("正在加载本地配置...");
 
   useEffect(() => {
     void Promise.all([getAppConfig(), listTasks()]).then(([nextConfig, nextTasks]) => {
       setConfig(nextConfig);
       setTasks(nextTasks);
-      setStatusMessage("Phase 0 就绪");
+      setOutputDir(nextConfig.default_output_dir ?? "");
+      setStatusMessage("Phase 1 就绪");
     });
   }, []);
 
@@ -42,6 +73,40 @@ export function App() {
     const saved = await saveAppConfig(config);
     setConfig(saved);
     setStatusMessage("配置已保存");
+  }
+
+  async function handleRunBatchTask() {
+    if (!config) {
+      return null;
+    }
+
+    setIsRunning(true);
+    setStatusMessage("正在处理图片...");
+    try {
+      const params = Object.fromEntries(
+        Object.entries(batchParams).filter(([, value]) => value !== null && value !== ""),
+      );
+      const result = await createTask({
+        task_type: selectedTaskType,
+        inputs,
+        params,
+        output_rule: {
+          project_name: projectName,
+          output_dir: outputDir || null,
+          keep_originals: true,
+        },
+      });
+      setStatusMessage(
+        `处理完成：成功 ${result.success_count}，失败 ${result.failed_count}`,
+      );
+      setTasks(await listTasks());
+      return result;
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "任务执行失败");
+      return null;
+    } finally {
+      setIsRunning(false);
+    }
   }
 
   async function handleCreatePreviewTask() {
@@ -63,6 +128,8 @@ export function App() {
   if (!config) {
     return <main className="loading">加载中...</main>;
   }
+
+  const aiProvider = createOpenAiCompatibleProvider(config.ai_provider);
 
   return (
     <main className="app-shell">
@@ -111,51 +178,52 @@ export function App() {
         </header>
 
         <section className="grid-layout">
-          <section className="panel panel--primary">
+          <BatchToolPanel
+            projectName={projectName}
+            outputDir={outputDir}
+            taskType={selectedTaskType}
+            inputs={inputs}
+            params={batchParams}
+            isRunning={isRunning}
+            onProjectNameChange={setProjectName}
+            onOutputDirChange={setOutputDir}
+            onTaskTypeChange={setSelectedTaskType}
+            onInputsChange={setInputs}
+            onParamsChange={setBatchParams}
+            onRun={handleRunBatchTask}
+          />
+
+          <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
+          <TaskCenter tasks={tasks} />
+          <section className="panel">
             <div className="panel__header">
               <div>
-                <p className="eyebrow">Task Protocol</p>
-                <h2>统一任务模型</h2>
+                <p className="eyebrow">Protocol</p>
+                <h2>任务与 AI 协议</h2>
               </div>
             </div>
-
-            <div className="form-grid">
-              <label>
-                <span>项目名</span>
-                <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-              </label>
-
-              <label>
-                <span>任务类型</span>
-                <select
-                  value={selectedTaskType}
-                  onChange={(event) => setSelectedTaskType(event.target.value as TaskType)}
-                >
-                  {taskTypes.map((task) => (
-                    <option key={task.type} value={task.type}>
-                      {task.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
             <div className="task-preview">
               <h3>{selectedTask.label}</h3>
               <p>{selectedTask.description}</p>
               <code>
-                TaskRequest(type="{selectedTask.type}", inputs=[], outputRule.project="
-                {projectName}")
+                TaskRequest(type="{selectedTask.type}", inputs={inputs.length}, project="{projectName}")
               </code>
             </div>
-
-            <button className="primary-button" type="button" onClick={handleCreatePreviewTask}>
-              创建预览任务
+            <div className="task-preview">
+              <h3>{aiProvider.label}</h3>
+              <p>
+                Responses: {getProviderEndpoint(aiProvider, "responses")} · Images:{" "}
+                {getProviderEndpoint(aiProvider, "images")}
+              </p>
+              <code>
+                text={aiProvider.models.text}; vision={aiProvider.models.vision}; image=
+                {aiProvider.models.image}
+              </code>
+            </div>
+            <button className="ghost-button" type="button" onClick={handleCreatePreviewTask}>
+              创建空任务记录
             </button>
           </section>
-
-          <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
-          <TaskCenter tasks={tasks} />
         </section>
       </section>
     </main>

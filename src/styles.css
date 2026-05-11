@@ -139,8 +139,9 @@ select {
 
 .grid-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
   gap: 18px;
+  align-items: start;
 }
 
 .panel {
@@ -167,6 +168,10 @@ select {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.form-grid--spaced {
+  margin-top: 16px;
 }
 
 label {
@@ -228,6 +233,7 @@ code {
 .ghost-button,
 .icon-button {
   display: inline-flex;
+  gap: 8px;
   align-items: center;
   justify-content: center;
   min-height: 40px;
@@ -260,6 +266,11 @@ code {
   font-weight: 700;
 }
 
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .primary-button:hover {
   background: #1c594f;
 }
@@ -282,6 +293,46 @@ code {
 .task-list {
   display: grid;
   gap: 10px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.inline-field--two {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.input-list {
+  display: grid;
+  max-height: 190px;
+  margin-top: 14px;
+  overflow: auto;
+  border: 1px solid #e0e7ed;
+  border-radius: 8px;
+}
+
+.input-row {
+  min-width: 0;
+  padding: 10px 12px;
+  color: #314253;
+  background: #f8fbfc;
+  border-bottom: 1px solid #e5ecf1;
+  font-size: 13px;
+}
+
+.input-row:last-child {
+  border-bottom: 0;
+}
+
+.input-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-row {
