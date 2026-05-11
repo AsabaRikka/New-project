@@ -1540,12 +1540,26 @@ fn collect_images_from_dir(
 fn resolve_task_output_dir(request: &TaskRequest) -> AppResult<PathBuf> {
     let base_dir = match &request.output_rule.output_dir {
         Some(output_dir) if !output_dir.trim().is_empty() => PathBuf::from(output_dir),
-        _ => std::env::current_dir()?.join("outputs"),
+        _ => default_outputs_dir()?,
     };
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let project_name = sanitize_segment(&request.output_rule.project_name);
     let task_type = format!("{:?}", request.task_type).to_lowercase();
     Ok(base_dir.join(project_name).join(task_type).join(timestamp))
+}
+
+fn default_outputs_dir() -> AppResult<PathBuf> {
+    default_outputs_dir_from(std::env::current_dir()?)
+}
+
+fn default_outputs_dir_from(current_dir: PathBuf) -> AppResult<PathBuf> {
+    let workspace_dir = current_dir
+        .parent()
+        .filter(|_| current_dir.file_name().and_then(|name| name.to_str()) == Some("src-tauri"))
+        .map(Path::to_path_buf)
+        .unwrap_or(current_dir);
+
+    Ok(workspace_dir.join("outputs"))
 }
 
 fn write_reports(output_dir: &Path, report: &TaskReport) -> AppResult<()> {
@@ -2357,6 +2371,25 @@ mod tests {
         )
         .expect("split image");
         assert_eq!(first.dimensions(), (88, 88));
+    }
+
+    #[test]
+    fn default_output_dir_stays_outside_src_tauri() {
+        let temp = tempdir().expect("temp dir");
+        let workspace_dir = temp.path().join("workspace");
+        let src_tauri_dir = workspace_dir.join("src-tauri");
+        fs::create_dir_all(&src_tauri_dir).expect("src-tauri dir");
+
+        let output_dir = default_outputs_dir_from(src_tauri_dir).expect("default output dir");
+
+        fs::create_dir_all(&output_dir).expect("output dir");
+        assert_eq!(
+            output_dir.canonicalize().expect("canonical output"),
+            workspace_dir
+                .join("outputs")
+                .canonicalize()
+                .expect("canonical expected output")
+        );
     }
 
     fn run_test_task(
