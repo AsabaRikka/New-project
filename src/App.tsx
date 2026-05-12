@@ -160,6 +160,10 @@ export function App() {
     if (view === "batch" && !batchTaskTypes.some((task) => task.value === selectedTaskType)) {
       setSelectedTaskType("rename");
     }
+    if (view === "ai" && !pipelineSteps.every((step) => aiTaskTypeSet.has(step.task_type))) {
+      setExecutionMode("single");
+      setPipelineSteps([]);
+    }
   }
 
   async function handleSaveConfig() {
@@ -181,7 +185,7 @@ export function App() {
       setStatusMessage("请先上传图片，再提交 AI 任务");
       return null;
     }
-    return runTaskRequest(selectedAiTaskType, "single", [], `${projectName}-${selectedAiTaskType}`, "正在提交 AI 任务...");
+    return runTaskRequest(selectedAiTaskType, executionMode, pipelineSteps, `${projectName}-${selectedAiTaskType}`, "正在提交 AI 任务...");
   }
 
   async function runTaskRequest(
@@ -205,6 +209,10 @@ export function App() {
             },
           ]
         : steps;
+    if (mode !== "single" && aiTaskTypeSet.has(taskType) && activeSteps.some((step) => !aiTaskTypeSet.has(step.task_type))) {
+      setStatusMessage("AI 工作台的串联/并联步骤只能使用 AI 任务");
+      return null;
+    }
 
     if (activeSteps.length === 0) {
       setStatusMessage("请先添加至少一个任务步骤");
@@ -303,7 +311,7 @@ export function App() {
       id: existing?.id ?? crypto.randomUUID(),
       name: trimmedName,
       execution_mode: executionMode,
-      task_type: selectedTaskType,
+      task_type: activeView === "ai" ? selectedAiTaskType : selectedTaskType,
       params: sanitizeParams(batchParams),
       pipeline_steps: pipelineSteps.map(clonePipelineStep),
       created_at: existing?.created_at ?? now,
@@ -324,7 +332,11 @@ export function App() {
     }
 
     setExecutionMode(favorite.execution_mode);
-    setSelectedTaskType(favorite.task_type);
+    if (aiTaskTypeSet.has(favorite.task_type)) {
+      setSelectedAiTaskType(favorite.task_type);
+    } else {
+      setSelectedTaskType(favorite.task_type);
+    }
     setBatchParams({ ...defaultBatchParams, ...favorite.params });
     setPipelineSteps(favorite.pipeline_steps.map(clonePipelineStep));
     setStatusMessage(`已调用常用任务：${favorite.name}`);
@@ -490,9 +502,9 @@ export function App() {
             projectName={projectName}
             outputDir={outputDir}
             taskType={selectedAiTaskType}
-            executionMode="single"
-            pipelineSteps={[]}
-            favoriteTasks={[]}
+            executionMode={executionMode}
+            pipelineSteps={pipelineSteps}
+            favoriteTasks={favoriteTasks}
             inputs={inputs}
             params={batchParams}
             isRunning={isRunning}
@@ -500,19 +512,17 @@ export function App() {
             onProjectNameChange={setProjectName}
             onOutputDirChange={setOutputDir}
             onTaskTypeChange={setSelectedAiTaskType}
-            onExecutionModeChange={() => undefined}
-            onPipelineStepsChange={() => undefined}
-            onSaveFavoriteTask={() => undefined}
-            onApplyFavoriteTask={() => undefined}
-            onDeleteFavoriteTask={() => undefined}
+            onExecutionModeChange={setExecutionMode}
+            onPipelineStepsChange={setPipelineSteps}
+            onSaveFavoriteTask={handleSaveFavoriteTask}
+            onApplyFavoriteTask={handleApplyFavoriteTask}
+            onDeleteFavoriteTask={handleDeleteFavoriteTask}
             onInputsChange={setInputs}
             onParamsChange={setBatchParams}
             onRun={handleRunAiTask}
             title="AI 创意协议工作台"
             eyebrow="Phase 2-4"
             taskTypes={aiTaskTypes}
-            hideFavorites
-            hideExecutionMode
             runLabel="提交后台任务"
             runningLabel="提交中..."
             requireInputsMessage="请先上传图片"
@@ -522,8 +532,8 @@ export function App() {
           <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
           <ProtocolPanel
             selectedTask={taskTypes.find((task) => task.type === selectedAiTaskType) ?? selectedTask}
-            executionMode="single"
-            pipelineSteps={[]}
+            executionMode={executionMode}
+            pipelineSteps={pipelineSteps}
             inputsCount={inputs.length}
             aiProvider={aiProvider}
             onCreatePreviewTask={handleCreatePreviewTask}

@@ -1,8 +1,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  CheckSquare,
   Copy,
   FileJson,
   RefreshCcw,
+  Square,
   Sparkles,
   Star,
   Trash2,
@@ -44,6 +46,7 @@ interface AiResultState {
   deleted: string[];
   copyLibrary: CopyLibraryItem[];
   promptLibrary: PromptLibraryItem[];
+  groups: Record<string, string>;
 }
 
 interface AiResultsPanelProps {
@@ -58,25 +61,42 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
   const [resultSort, setResultSort] = useState<AiResultSort>("newest");
   const [librarySort, setLibrarySort] = useState<LibrarySort>("newest");
   const [manualCopy, setManualCopy] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [groupName, setGroupName] = useState("");
+  const [groupFilter, setGroupFilter] = useState("all");
   const [state, setState] = useState<AiResultState>({
     favorites: [],
     starred: [],
     deleted: [],
     copyLibrary: [],
     promptLibrary: [],
+    groups: {},
   });
 
   useEffect(() => {
     setState(loadAiResultState());
   }, []);
 
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [activeTab]);
+
+  const groupOptions = useMemo(() => {
+    return Array.from(new Set(Object.values(state.groups).filter(Boolean))).sort((left, right) => left.localeCompare(right));
+  }, [state.groups]);
+
   const visibleResults = useMemo(() => {
     return sortResults(
-      results.filter((result) => !state.deleted.includes(result.id) && isAnalysisResult(result)),
+      results.filter(
+        (result) =>
+          !state.deleted.includes(result.id) &&
+          isAnalysisResult(result) &&
+          matchesGroupFilter(result.id, groupFilter, state.groups),
+      ),
       resultSort,
       state,
     );
-  }, [results, resultSort, state]);
+  }, [groupFilter, results, resultSort, state]);
 
   const generatedCopyLibrary = useMemo(() => {
     return dedupeCopyLibraryItems(
@@ -95,12 +115,18 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
   }, [results, state.deleted]);
 
   const sortedCopyLibrary = useMemo(() => {
-    return sortCopyLibrary([...generatedCopyLibrary, ...state.copyLibrary], librarySort);
-  }, [generatedCopyLibrary, librarySort, state.copyLibrary]);
+    return sortCopyLibrary(
+      [...generatedCopyLibrary, ...state.copyLibrary].filter((item) => matchesGroupFilter(item.id, groupFilter, state.groups)),
+      librarySort,
+    );
+  }, [generatedCopyLibrary, groupFilter, librarySort, state.copyLibrary, state.groups]);
 
   const sortedPromptLibrary = useMemo(() => {
-    return sortPromptLibrary([...generatedPromptLibrary, ...state.promptLibrary], librarySort);
-  }, [generatedPromptLibrary, librarySort, state.promptLibrary]);
+    return sortPromptLibrary(
+      [...generatedPromptLibrary, ...state.promptLibrary].filter((item) => matchesGroupFilter(item.id, groupFilter, state.groups)),
+      librarySort,
+    );
+  }, [generatedPromptLibrary, groupFilter, librarySort, state.promptLibrary, state.groups]);
 
   function sortCopyLibrary(items: CopyLibraryItem[], sort: LibrarySort) {
     return items.sort((left, right) => {
@@ -148,6 +174,59 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
       ...current,
       deleted: current.deleted.includes(resultId) ? current.deleted : [resultId, ...current.deleted],
     }));
+  }
+
+  function visibleItemIds() {
+    if (activeTab === "results") {
+      return visibleResults.map((result) => result.id);
+    }
+    if (activeTab === "copy") {
+      return sortedCopyLibrary.map((item) => item.id);
+    }
+    return sortedPromptLibrary.map((item) => item.id);
+  }
+
+  function toggleSelected(itemId: string) {
+    setSelectedIds((current) =>
+      current.includes(itemId) ? current.filter((id) => id !== itemId) : [itemId, ...current],
+    );
+  }
+
+  function selectVisible() {
+    setSelectedIds(visibleItemIds());
+  }
+
+  function clearSelection() {
+    setSelectedIds([]);
+  }
+
+  function applyGroupToSelected() {
+    const nextGroup = groupName.trim();
+    if (!nextGroup || selectedIds.length === 0) {
+      return;
+    }
+    updateState((current) => {
+      const groups = { ...current.groups };
+      for (const id of selectedIds) {
+        groups[id] = nextGroup;
+      }
+      return { ...current, groups };
+    });
+    setGroupFilter(nextGroup);
+    setGroupName("");
+  }
+
+  function clearSelectedGroup() {
+    if (selectedIds.length === 0) {
+      return;
+    }
+    updateState((current) => {
+      const groups = { ...current.groups };
+      for (const id of selectedIds) {
+        delete groups[id];
+      }
+      return { ...current, groups };
+    });
   }
 
   function addManualCopy() {
@@ -223,6 +302,44 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
         </button>
       </div>
 
+      <div className="library-bulkbar">
+        <div className="library-bulkbar__actions">
+          <button className="tiny-button" type="button" onClick={selectVisible} disabled={visibleItemIds().length === 0}>
+            <CheckSquare size={14} />
+            全选当前
+          </button>
+          <button className="tiny-button" type="button" onClick={clearSelection} disabled={selectedIds.length === 0}>
+            <Square size={14} />
+            取消选择
+          </button>
+          <span>{selectedIds.length} 项已选</span>
+        </div>
+        <div className="library-groupbar">
+          <label>
+            <span>分组筛选</span>
+            <select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}>
+              <option value="all">全部</option>
+              <option value="ungrouped">未分组</option>
+              {groupOptions.map((group) => (
+                <option value={group} key={group}>
+                  {group}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>分组名</span>
+            <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：小游戏爆图" />
+          </label>
+          <button className="secondary-button" type="button" onClick={applyGroupToSelected} disabled={selectedIds.length === 0 || !groupName.trim()}>
+            归入分组
+          </button>
+          <button className="ghost-button" type="button" onClick={clearSelectedGroup} disabled={selectedIds.length === 0}>
+            移出分组
+          </button>
+        </div>
+      </div>
+
       {activeTab === "results" ? (
         <>
           <div className="library-toolbar">
@@ -248,6 +365,9 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   result={result}
                   isFavorite={state.favorites.includes(result.id)}
                   isStarred={state.starred.includes(result.id)}
+                  isSelected={selectedIds.includes(result.id)}
+                  groupName={state.groups[result.id] ?? ""}
+                  onToggleSelected={() => toggleSelected(result.id)}
                   onToggleFavorite={() => toggleResultCollection(result.id, "favorites")}
                   onToggleStar={() => toggleResultCollection(result.id, "starred")}
                   onDelete={() => deleteResult(result.id)}
@@ -285,10 +405,14 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
             ) : (
               sortedCopyLibrary.map((item) => (
                 <article className={item.starred ? "copy-library-card copy-library-card--starred" : "copy-library-card"} key={item.id}>
+                  <label className="library-select">
+                    <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} aria-label={`选择 ${item.kind}`} />
+                  </label>
                   <div>
                     <strong>{item.kind}</strong>
                     <p>{item.text}</p>
                     <span>{item.generated ? "AI 生成" : item.source_path ? fileName(item.source_path) : "手动录入"}</span>
+                    {state.groups[item.id] && <span className="library-group-chip">{state.groups[item.id]}</span>}
                   </div>
                   <div className="copy-library-card__actions">
                     <button className="tiny-button" type="button" onClick={() => copyCopyLibraryItem(item, sortedCopyLibrary)}>
@@ -333,11 +457,21 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
             ) : (
               sortedPromptLibrary.map((item) => (
                 <article className={item.starred ? "prompt-library-card prompt-library-card--starred" : "prompt-library-card"} key={item.id}>
+                  <label className="library-select">
+                    <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} aria-label={`选择 ${item.prompt}`} />
+                  </label>
+                  {item.source_path && isImagePath(item.source_path) && (
+                    <div className="prompt-library-card__thumb">
+                      <img src={toAssetUrl(item.source_path)} alt="" loading="lazy" />
+                    </div>
+                  )}
                   <div className="prompt-library-card__main">
                     <div className="prompt-library-card__header">
-                      <strong>{item.generated ? "AI 裂变生成" : item.source_path ? fileName(item.source_path) : "裂变提示词"}</strong>
+                      <strong>{item.source_path ? fileName(item.source_path) : "裂变提示词"}</strong>
                       {item.size && <span>{item.size}</span>}
                     </div>
+                    {item.generated && <span>AI 裂变生成</span>}
+                    {state.groups[item.id] && <span className="library-group-chip">{state.groups[item.id]}</span>}
                     <p>{item.prompt}</p>
                     {item.negative_prompt && <span>Negative: {item.negative_prompt}</span>}
                     {item.changes.length > 0 && (
@@ -380,6 +514,9 @@ function ResultCard({
   result,
   isFavorite,
   isStarred,
+  isSelected,
+  groupName,
+  onToggleSelected,
   onToggleFavorite,
   onToggleStar,
   onDelete,
@@ -388,6 +525,9 @@ function ResultCard({
   result: AiResultRecord;
   isFavorite: boolean;
   isStarred: boolean;
+  isSelected: boolean;
+  groupName: string;
+  onToggleSelected: () => void;
   onToggleFavorite: () => void;
   onToggleStar: () => void;
   onDelete: () => void;
@@ -396,6 +536,9 @@ function ResultCard({
   const primaryText = resultPrimaryText(result);
   return (
     <article className={isStarred ? "ai-result-card ai-result-card--starred" : "ai-result-card"}>
+      <label className="library-select">
+        <input type="checkbox" checked={isSelected} onChange={onToggleSelected} aria-label={`选择 ${fileName(result.input_path)}`} />
+      </label>
       <div className="ai-result-card__thumb">
         {isImagePath(result.input_path) ? <img src={toAssetUrl(result.input_path)} alt="" loading="lazy" /> : <Sparkles size={30} />}
       </div>
@@ -411,6 +554,7 @@ function ResultCard({
         {renderResultItems(result)}
         <div className="ai-result-card__meta">
           <span>评分 {resultScore(result)}</span>
+          {groupName && <span className="library-group-chip">{groupName}</span>}
           <button className="tiny-button" type="button" onClick={() => copyText(primaryText)} disabled={!primaryText}>
             <Copy size={14} />
             复制
@@ -581,6 +725,17 @@ function isCopyResult(result: AiResultRecord) {
 
 function isVariationResult(result: AiResultRecord) {
   return result.analysis_json.result_type === "creative_variation_prompts";
+}
+
+function matchesGroupFilter(itemId: string, filter: string, groups: Record<string, string>) {
+  if (filter === "all") {
+    return true;
+  }
+  const group = groups[itemId] ?? "";
+  if (filter === "ungrouped") {
+    return !group;
+  }
+  return group === filter;
 }
 
 function fileName(path: string) {
@@ -761,6 +916,7 @@ function loadAiResultState(): AiResultState {
       deleted: stringArray(parsed.deleted),
       copyLibrary: Array.isArray(parsed.copyLibrary) ? parsed.copyLibrary.filter(isCopyLibraryItem) : [],
       promptLibrary: Array.isArray(parsed.promptLibrary) ? parsed.promptLibrary.filter(isPromptLibraryItem) : [],
+      groups: stringRecord(parsed.groups),
     };
   } catch {
     return {
@@ -769,6 +925,7 @@ function loadAiResultState(): AiResultState {
       deleted: [],
       copyLibrary: [],
       promptLibrary: [],
+      groups: {},
     };
   }
 }
@@ -779,6 +936,15 @@ function saveAiResultState(state: AiResultState) {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }
 
 function isCopyLibraryItem(value: unknown): value is CopyLibraryItem {
