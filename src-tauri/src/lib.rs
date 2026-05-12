@@ -2126,7 +2126,7 @@ fn analyze_ad_creative_image(
         &system_prompt,
     ) {
         Ok(value) => Ok(value),
-        Err(_) => request_chat_analysis(
+        Err(_) => request_responses_plain_json(
             &client,
             ai_context,
             &prompt,
@@ -2338,59 +2338,6 @@ fn request_responses_plain_json(
     let mut last_error: Option<AppError> = None;
     for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
         let url = join_api_endpoint(&base_url, "responses");
-        match send_ai_json_request(
-            client
-            .post(url)
-            .bearer_auth(&ai_context.api_key)
-            .json(&body),
-        )
-        {
-            Ok(response) => {
-                return parse_model_json_output(&response);
-            }
-            Err(error) => last_error = Some(error.into()),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
-}
-
-fn request_chat_analysis(
-    client: &reqwest::blocking::Client,
-    ai_context: &AiTaskContext,
-    prompt: &str,
-    image_data_url: &str,
-    system_prompt: &str,
-) -> AppResult<serde_json::Value> {
-    request_chat_json(client, ai_context, prompt, image_data_url, system_prompt)
-}
-
-fn request_chat_json(
-    client: &reqwest::blocking::Client,
-    ai_context: &AiTaskContext,
-    prompt: &str,
-    image_data_url: &str,
-    system_prompt: &str,
-) -> AppResult<serde_json::Value> {
-    let body = json!({
-        "model": ai_context.config.vision_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": [
-                    { "type": "text", "text": prompt },
-                    { "type": "image_url", "image_url": { "url": image_data_url } }
-                ]
-            }
-        ],
-        "response_format": { "type": "json_object" }
-    });
-    let mut last_error: Option<AppError> = None;
-    for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
-        let url = join_api_endpoint(&base_url, "chat/completions");
         match send_ai_json_request(
             client
             .post(url)
