@@ -471,7 +471,9 @@ fn create_task(
         ai_context.as_ref(),
     ) {
         Ok(mut report) => {
-            report.status = if report.failed_count > 0 {
+            report.status = if matches!(report.status, TaskStatus::Cancelled) {
+                TaskStatus::Cancelled
+            } else if report.failed_count > 0 {
                 TaskStatus::Failed
             } else {
                 TaskStatus::Completed
@@ -605,7 +607,9 @@ fn run_background_task(
         Some(&ai_context),
     ) {
         Ok(mut report) => {
-            report.status = if report.failed_count > 0 {
+            report.status = if matches!(report.status, TaskStatus::Cancelled) {
+                TaskStatus::Cancelled
+            } else if report.failed_count > 0 {
                 TaskStatus::Failed
             } else {
                 TaskStatus::Completed
@@ -776,6 +780,29 @@ fn open_task_folder(path: String) -> AppResult<bool> {
     Ok(true)
 }
 
+#[tauri::command]
+#[allow(dead_code)]
+fn cancel_task(task_id: String, state: tauri::State<'_, AppState>) -> AppResult<bool> {
+    let cancelled_status_json = serde_json::to_string(&TaskStatus::Cancelled)?;
+    let now = Utc::now().to_rfc3339();
+    let db = state.db.lock().expect("database mutex poisoned");
+    db.execute(
+        "update tasks
+        set status = ?1, last_error = ?2, updated_at = ?3
+        where id = ?4
+          and status in (?5, ?6)",
+        params![
+            cancelled_status_json,
+            "用户取消任务",
+            now,
+            task_id,
+            serde_json::to_string(&TaskStatus::Pending)?,
+            serde_json::to_string(&TaskStatus::Running)?,
+        ],
+    )?;
+    Ok(true)
+}
+
 fn read_report_first_error(output_dir: &str) -> Option<String> {
     let report_path = Path::new(output_dir).join("report").join("report.json");
     let report: TaskReport = serde_json::from_str(&fs::read_to_string(report_path).ok()?).ok()?;
@@ -869,6 +896,7 @@ fn execute_task(
         request.task_type.clone(),
         input_paths.len() as u32,
         output_dir.to_string_lossy().to_string(),
+        state,
     );
 
     let mut files = match request.task_type {
@@ -934,11 +962,22 @@ fn execute_task(
 
     let success_count = files.iter().filter(|file| file.status == "success").count() as u32;
     let failed_count = files.iter().filter(|file| file.status == "failed").count() as u32;
+    let cancelled_count = files
+        .iter()
+        .filter(|file| file.status == "cancelled")
+        .count() as u32;
+    let task_cancelled = state
+        .map(|state| is_task_cancelled(state, task_id).unwrap_or(false))
+        .unwrap_or(false);
 
     Ok(TaskReport {
         task_id: task_id.to_string(),
         task_type: request.task_type.clone(),
-        status: TaskStatus::Completed,
+        status: if cancelled_count > 0 || task_cancelled {
+            TaskStatus::Cancelled
+        } else {
+            TaskStatus::Completed
+        },
         input_count: input_paths.len() as u32,
         success_count,
         failed_count,
@@ -957,6 +996,7 @@ struct ProgressTracker<'a> {
     success_count: u32,
     failed_count: u32,
     output_dir: String,
+    state: Option<&'a AppState>,
 }
 
 impl<'a> ProgressTracker<'a> {
@@ -966,6 +1006,7 @@ impl<'a> ProgressTracker<'a> {
         task_type: TaskType,
         total: u32,
         output_dir: String,
+        state: Option<&'a AppState>,
     ) -> Self {
         Self {
             app_handle,
@@ -976,6 +1017,40 @@ impl<'a> ProgressTracker<'a> {
             success_count: 0,
             failed_count: 0,
             output_dir,
+            state,
+        }
+    }
+
+    fn is_cancelled(&self) -> AppResult<bool> {
+        let Some(state) = self.state else {
+            return Ok(false);
+        };
+        is_task_cancelled(state, &self.task_id)
+    }
+
+    fn should_stop(&self) -> bool {
+        self.is_cancelled().unwrap_or(false)
+    }
+
+    fn cancelled_result(&self, input: &Path) -> FileResult {
+        FileResult {
+            input_path: input.to_string_lossy().to_string(),
+            output_path: None,
+            status: "cancelled".to_string(),
+            error: Some("用户取消任务".to_string()),
+        }
+    }
+
+    fn cancelled_group_result(&self, inputs: &[PathBuf]) -> FileResult {
+        FileResult {
+            input_path: inputs
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(";"),
+            output_path: None,
+            status: "cancelled".to_string(),
+            error: Some("用户取消任务".to_string()),
         }
     }
 
@@ -1001,7 +1076,7 @@ impl<'a> ProgressTracker<'a> {
         self.current += 1;
         if result.status == "success" {
             self.success_count += 1;
-        } else {
+        } else if result.status == "failed" {
             self.failed_count += 1;
         }
         emit_progress(
@@ -1028,10 +1103,21 @@ fn emit_progress(app_handle: Option<&AppHandle>, progress: TaskProgress) {
     }
 }
 
+fn is_task_cancelled(state: &AppState, task_id: &str) -> AppResult<bool> {
+    let db = state.db.lock().expect("database mutex poisoned");
+    let status_json: String = db.query_row(
+        "select status from tasks where id = ?1",
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    let status = serde_json::from_str(&status_json).unwrap_or(TaskStatus::Failed);
+    Ok(matches!(status, TaskStatus::Cancelled))
+}
+
 fn first_error(files: &[FileResult]) -> Option<&str> {
     files
         .iter()
-        .find(|file| file.status == "failed")
+        .find(|file| file.status == "failed" || file.status == "cancelled")
         .and_then(|file| file.error.as_deref())
 }
 
@@ -1049,6 +1135,10 @@ fn process_rename(
 
     let mut results = Vec::new();
     for (position, input) in sorted.iter().enumerate() {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(input));
+            break;
+        }
         tracker.start_file(input);
         let extension = normalized_extension(input).unwrap_or_else(|| "jpg".to_string());
         let index = start_index + position as u32;
@@ -1078,6 +1168,10 @@ fn process_resize(
     let mut results = Vec::new();
 
     for input in input_paths {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(input));
+            break;
+        }
         tracker.start_file(input);
         let result = (|| -> AppResult<FileResult> {
             let image = image::open(input)?;
@@ -1110,6 +1204,10 @@ fn process_compress_convert(
     let mut results = Vec::new();
 
     for input in input_paths {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(input));
+            break;
+        }
         tracker.start_file(input);
         let result = (|| -> AppResult<FileResult> {
             let image = image::open(input)?;
@@ -1166,6 +1264,10 @@ fn process_split(
     let mut results = Vec::new();
 
     for input in input_paths {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(input));
+            break;
+        }
         tracker.start_file(input);
         let result = (|| -> AppResult<Vec<FileResult>> {
             let image = image::open(input)?;
@@ -1860,6 +1962,10 @@ fn process_stitch(
     let mut results = Vec::new();
 
     for (batch_index, chunk) in sorted.chunks(batch_size).enumerate() {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_group_result(chunk));
+            break;
+        }
         if let Some(first_input) = chunk.first() {
             tracker.start_file(first_input);
         }
@@ -1920,6 +2026,10 @@ fn process_organize(
 ) -> AppResult<Vec<FileResult>> {
     let mut results = Vec::new();
     for input in input_paths {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(input));
+            break;
+        }
         tracker.start_file(input);
         let extension = normalized_extension(input).unwrap_or_else(|| "unknown".to_string());
         let target_dir = output_dir.join(extension);
@@ -1995,6 +2105,10 @@ fn process_ai_analyze(
     fs::create_dir_all(report_dir)?;
 
     for input in sorted {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(&input));
+            break;
+        }
         tracker.start_file(&input);
         let result = (|| -> AppResult<FileResult> {
             let analysis = analyze_ad_creative_image(
@@ -2059,6 +2173,10 @@ fn process_ai_generation_task(
     fs::create_dir_all(report_dir)?;
 
     for input in sorted {
+        if tracker.should_stop() {
+            results.push(tracker.cancelled_result(&input));
+            break;
+        }
         tracker.start_file(&input);
         let result = (|| -> AppResult<FileResult> {
             let generated = generate_ai_protocol_asset(
@@ -3634,6 +3752,7 @@ pub fn run() {
             clear_api_key,
             test_ai_connection,
             create_task,
+            cancel_task,
             list_tasks,
             open_task_folder,
             list_ai_results

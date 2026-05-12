@@ -47,6 +47,7 @@ interface BatchToolPanelProps {
   hideExecutionMode?: boolean;
   runLabel?: string;
   runningLabel?: string;
+  requireInputsMessage?: string;
 }
 
 export const batchTaskTypes: Array<{ value: TaskType; label: string }> = [
@@ -61,9 +62,9 @@ export const batchTaskTypes: Array<{ value: TaskType; label: string }> = [
 
 export const aiTaskTypes: Array<{ value: TaskType; label: string }> = [
   { value: "ai_analyze", label: "AI 广告分析" },
+  { value: "ai_generate_image", label: "创意裂变提示词" },
   { value: "ai_generate_copy", label: "图片匹配文案" },
   { value: "ai_generate_title", label: "图片匹配标题" },
-  { value: "ai_generate_image", label: "创意裂变提示词" },
 ];
 
 const allTaskTypes = [...batchTaskTypes, ...aiTaskTypes];
@@ -97,6 +98,7 @@ export function BatchToolPanel({
   hideExecutionMode = false,
   runLabel,
   runningLabel = "处理中...",
+  requireInputsMessage = "请选择图片或文件夹",
 }: BatchToolPanelProps) {
   const [selectedInputs, setSelectedInputs] = useState<Set<string>>(new Set());
   const [isQueueExpanded, setIsQueueExpanded] = useState(true);
@@ -762,7 +764,11 @@ export function BatchToolPanel({
 
       <button className="primary-button" type="button" disabled={isRunning || inputs.length === 0 || (executionMode !== "single" && pipelineSteps.length === 0)} onClick={onRun}>
         <Play size={16} />
-        {isRunning ? runningLabel : runLabel ?? (executionMode === "serial" ? "运行串联任务" : executionMode === "parallel" ? "运行并联任务" : "运行批处理")}
+        {isRunning
+          ? runningLabel
+          : inputs.length === 0
+            ? requireInputsMessage
+            : runLabel ?? (executionMode === "serial" ? "运行串联任务" : executionMode === "parallel" ? "运行并联任务" : "运行批处理")}
       </button>
     </section>
   );

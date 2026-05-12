@@ -2,7 +2,6 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Copy,
   FileJson,
-  ImagePlus,
   RefreshCcw,
   Sparkles,
   Star,
@@ -23,6 +22,7 @@ interface CopyLibraryItem {
   kind: string;
   starred: boolean;
   created_at: string;
+  generated?: boolean;
 }
 
 interface PromptLibraryItem {
@@ -35,6 +35,7 @@ interface PromptLibraryItem {
   changes: string[];
   starred: boolean;
   created_at: string;
+  generated?: boolean;
 }
 
 interface AiResultState {
@@ -47,7 +48,7 @@ interface AiResultState {
 
 interface AiResultsPanelProps {
   results: AiResultRecord[];
-  onRegenerateFromResult: (result: AiResultRecord, mode: "reverse_prompt" | "prompt_template") => void;
+  onRegenerateFromResult: (result: AiResultRecord, mode: "reverse_prompt") => void;
 }
 
 const storageKey = "ad-creative-studio.ai-result-state";
@@ -71,35 +72,59 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
 
   const visibleResults = useMemo(() => {
     return sortResults(
-      results.filter((result) => !state.deleted.includes(result.id)),
+      results.filter((result) => !state.deleted.includes(result.id) && isAnalysisResult(result)),
       resultSort,
       state,
     );
   }, [results, resultSort, state]);
 
+  const generatedCopyLibrary = useMemo(() => {
+    return dedupeCopyLibraryItems(
+      results
+        .filter((result) => !state.deleted.includes(result.id) && isCopyResult(result))
+        .flatMap((result) => extractCopyLibraryItems(result, true)),
+    );
+  }, [results, state.deleted]);
+
+  const generatedPromptLibrary = useMemo(() => {
+    return dedupePromptLibraryItems(
+      results
+        .filter((result) => !state.deleted.includes(result.id) && isVariationResult(result))
+        .flatMap((result) => extractPromptItems(result).map((item) => createPromptLibraryItem(item, result, true))),
+    );
+  }, [results, state.deleted]);
+
   const sortedCopyLibrary = useMemo(() => {
-    return [...state.copyLibrary].sort((left, right) => {
-      if (librarySort === "starred") {
-        return Number(right.starred) - Number(left.starred) || right.created_at.localeCompare(left.created_at);
-      }
-      if (librarySort === "source") {
-        return (left.source_path ?? "").localeCompare(right.source_path ?? "") || right.created_at.localeCompare(left.created_at);
-      }
-      return right.created_at.localeCompare(left.created_at);
-    });
-  }, [librarySort, state.copyLibrary]);
+    return sortCopyLibrary([...generatedCopyLibrary, ...state.copyLibrary], librarySort);
+  }, [generatedCopyLibrary, librarySort, state.copyLibrary]);
 
   const sortedPromptLibrary = useMemo(() => {
-    return [...state.promptLibrary].sort((left, right) => {
-      if (librarySort === "starred") {
+    return sortPromptLibrary([...generatedPromptLibrary, ...state.promptLibrary], librarySort);
+  }, [generatedPromptLibrary, librarySort, state.promptLibrary]);
+
+  function sortCopyLibrary(items: CopyLibraryItem[], sort: LibrarySort) {
+    return items.sort((left, right) => {
+      if (sort === "starred") {
         return Number(right.starred) - Number(left.starred) || right.created_at.localeCompare(left.created_at);
       }
-      if (librarySort === "source") {
+      if (sort === "source") {
         return (left.source_path ?? "").localeCompare(right.source_path ?? "") || right.created_at.localeCompare(left.created_at);
       }
       return right.created_at.localeCompare(left.created_at);
     });
-  }, [librarySort, state.promptLibrary]);
+  }
+
+  function sortPromptLibrary(items: PromptLibraryItem[], sort: LibrarySort) {
+    return items.sort((left, right) => {
+      if (sort === "starred") {
+        return Number(right.starred) - Number(left.starred) || right.created_at.localeCompare(left.created_at);
+      }
+      if (sort === "source") {
+        return (left.source_path ?? "").localeCompare(right.source_path ?? "") || right.created_at.localeCompare(left.created_at);
+      }
+      return right.created_at.localeCompare(left.created_at);
+    });
+  }
 
   function updateState(updater: (current: AiResultState) => AiResultState) {
     setState((current) => {
@@ -125,42 +150,6 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     }));
   }
 
-  function addResultToCopyLibrary(result: AiResultRecord) {
-    const texts = extractCopyTexts(result);
-    if (texts.length === 0) {
-      return;
-    }
-
-    updateState((current) => {
-      const existingTexts = new Set(current.copyLibrary.map((item) => `${item.source_result_id ?? "manual"}:${item.text}`));
-      const nextItems = texts
-        .filter((text) => !existingTexts.has(`${result.id}:${text}`))
-        .map((text) => createCopyLibraryItem(text, result));
-      return {
-        ...current,
-        copyLibrary: [...nextItems, ...current.copyLibrary].slice(0, 300),
-      };
-    });
-  }
-
-  function addResultToPromptLibrary(result: AiResultRecord) {
-    const prompts = extractPromptItems(result);
-    if (prompts.length === 0) {
-      return;
-    }
-
-    updateState((current) => {
-      const existingPrompts = new Set(current.promptLibrary.map((item) => `${item.source_result_id ?? "manual"}:${item.prompt}`));
-      const nextItems = prompts
-        .filter((prompt) => !existingPrompts.has(`${result.id}:${prompt.prompt}`))
-        .map((prompt) => createPromptLibraryItem(prompt, result));
-      return {
-        ...current,
-        promptLibrary: [...nextItems, ...current.promptLibrary].slice(0, 300),
-      };
-    });
-  }
-
   function addManualCopy() {
     const text = manualCopy.trim();
     if (!text) {
@@ -168,7 +157,7 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     }
     updateState((current) => ({
       ...current,
-      copyLibrary: [createCopyLibraryItem(text, null), ...current.copyLibrary].slice(0, 300),
+      copyLibrary: [createCopyLibraryItem(text, "手动文案", null), ...current.copyLibrary].slice(0, 300),
     }));
     setManualCopy("");
   }
@@ -262,8 +251,6 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   onToggleFavorite={() => toggleResultCollection(result.id, "favorites")}
                   onToggleStar={() => toggleResultCollection(result.id, "starred")}
                   onDelete={() => deleteResult(result.id)}
-                  onCopyToLibrary={() => addResultToCopyLibrary(result)}
-                  onPromptToLibrary={() => addResultToPromptLibrary(result)}
                   onRegenerate={onRegenerateFromResult}
                 />
               ))
@@ -287,7 +274,7 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
           <div className="copy-library-add">
             <textarea value={manualCopy} onChange={(event) => setManualCopy(event.target.value)} placeholder="手动录入一条文案、标题或 CTA" />
             <button className="secondary-button" type="button" onClick={addManualCopy}>
-              <ImagePlus size={16} />
+              <FileJson size={16} />
               入库
             </button>
           </div>
@@ -301,21 +288,25 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   <div>
                     <strong>{item.kind}</strong>
                     <p>{item.text}</p>
-                    <span>{item.source_path ? fileName(item.source_path) : "手动录入"}</span>
+                    <span>{item.generated ? "AI 生成" : item.source_path ? fileName(item.source_path) : "手动录入"}</span>
                   </div>
                   <div className="copy-library-card__actions">
-                    <button className="tiny-button" type="button" onClick={() => copyText(item.text)}>
+                    <button className="tiny-button" type="button" onClick={() => copyCopyLibraryItem(item, sortedCopyLibrary)}>
                       <Copy size={14} />
-                      复制
+                      {item.generated ? "复制全部" : "复制"}
                     </button>
-                    <button className="tiny-button" type="button" onClick={() => toggleCopyStar(item.id)}>
-                      <Star size={14} fill={item.starred ? "currentColor" : "none"} />
-                      {item.starred ? "已标星" : "标星"}
-                    </button>
-                    <button className="tiny-button tiny-button--danger" type="button" onClick={() => deleteCopy(item.id)}>
-                      <Trash2 size={14} />
-                      删除
-                    </button>
+                    {!item.generated && (
+                      <>
+                        <button className="tiny-button" type="button" onClick={() => toggleCopyStar(item.id)}>
+                          <Star size={14} fill={item.starred ? "currentColor" : "none"} />
+                          {item.starred ? "已标星" : "标星"}
+                        </button>
+                        <button className="tiny-button tiny-button--danger" type="button" onClick={() => deleteCopy(item.id)}>
+                          <Trash2 size={14} />
+                          删除
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               ))
@@ -344,7 +335,7 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                 <article className={item.starred ? "prompt-library-card prompt-library-card--starred" : "prompt-library-card"} key={item.id}>
                   <div className="prompt-library-card__main">
                     <div className="prompt-library-card__header">
-                      <strong>{item.source_path ? fileName(item.source_path) : "裂变提示词"}</strong>
+                      <strong>{item.generated ? "AI 裂变生成" : item.source_path ? fileName(item.source_path) : "裂变提示词"}</strong>
                       {item.size && <span>{item.size}</span>}
                     </div>
                     <p>{item.prompt}</p>
@@ -358,18 +349,22 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                     )}
                   </div>
                   <div className="copy-library-card__actions">
-                    <button className="tiny-button" type="button" onClick={() => copyText(item.prompt)}>
+                    <button className="tiny-button" type="button" onClick={() => copyPromptLibraryItem(item, sortedPromptLibrary)}>
                       <Copy size={14} />
-                      复制
+                      {item.generated ? "复制全部" : "复制"}
                     </button>
-                    <button className="tiny-button" type="button" onClick={() => togglePromptStar(item.id)}>
-                      <Star size={14} fill={item.starred ? "currentColor" : "none"} />
-                      {item.starred ? "已标星" : "标星"}
-                    </button>
-                    <button className="tiny-button tiny-button--danger" type="button" onClick={() => deletePrompt(item.id)}>
-                      <Trash2 size={14} />
-                      删除
-                    </button>
+                    {!item.generated && (
+                      <>
+                        <button className="tiny-button" type="button" onClick={() => togglePromptStar(item.id)}>
+                          <Star size={14} fill={item.starred ? "currentColor" : "none"} />
+                          {item.starred ? "已标星" : "标星"}
+                        </button>
+                        <button className="tiny-button tiny-button--danger" type="button" onClick={() => deletePrompt(item.id)}>
+                          <Trash2 size={14} />
+                          删除
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               ))
@@ -388,8 +383,6 @@ function ResultCard({
   onToggleFavorite,
   onToggleStar,
   onDelete,
-  onCopyToLibrary,
-  onPromptToLibrary,
   onRegenerate,
 }: {
   result: AiResultRecord;
@@ -398,13 +391,9 @@ function ResultCard({
   onToggleFavorite: () => void;
   onToggleStar: () => void;
   onDelete: () => void;
-  onCopyToLibrary: () => void;
-  onPromptToLibrary: () => void;
-  onRegenerate: (result: AiResultRecord, mode: "reverse_prompt" | "prompt_template") => void;
+  onRegenerate: (result: AiResultRecord, mode: "reverse_prompt") => void;
 }) {
   const primaryText = resultPrimaryText(result);
-  const copyTexts = extractCopyTexts(result);
-  const promptItems = extractPromptItems(result);
   return (
     <article className={isStarred ? "ai-result-card ai-result-card--starred" : "ai-result-card"}>
       <div className="ai-result-card__thumb">
@@ -434,21 +423,9 @@ function ResultCard({
             <Star size={14} fill={isStarred ? "currentColor" : "none"} />
             {isStarred ? "已标星" : "标星"}
           </button>
-          <button className="tiny-button" type="button" onClick={onCopyToLibrary} disabled={copyTexts.length === 0}>
-            <ImagePlus size={14} />
-            入文案库
-          </button>
-          <button className="tiny-button" type="button" onClick={onPromptToLibrary} disabled={promptItems.length === 0}>
-            <ImagePlus size={14} />
-            入提示词库
-          </button>
           <button className="tiny-button" type="button" onClick={() => onRegenerate(result, "reverse_prompt")}>
             <RefreshCcw size={14} />
             反推重生成
-          </button>
-          <button className="tiny-button" type="button" onClick={() => onRegenerate(result, "prompt_template")}>
-            <RefreshCcw size={14} />
-            模板重生成
           </button>
           <button className="tiny-button tiny-button--danger" type="button" onClick={onDelete}>
             <Trash2 size={14} />
@@ -481,21 +458,22 @@ function sortResults(results: AiResultRecord[], sort: AiResultSort, state: AiRes
   });
 }
 
-function createCopyLibraryItem(text: string, result: AiResultRecord | null): CopyLibraryItem {
+function createCopyLibraryItem(text: string, kind: string, result: AiResultRecord | null, generated = false): CopyLibraryItem {
   return {
-    id: crypto.randomUUID(),
+    id: generated && result ? `${result.id}:${kind}:${text}` : crypto.randomUUID(),
     source_result_id: result?.id ?? null,
     source_path: result?.input_path ?? null,
     text,
-    kind: result ? copyKind(result) : "手动文案",
+    kind,
     starred: false,
-    created_at: new Date().toISOString(),
+    created_at: generated && result ? result.created_at : new Date().toISOString(),
+    generated,
   };
 }
 
-function createPromptLibraryItem(item: Omit<PromptLibraryItem, "id" | "source_result_id" | "source_path" | "starred" | "created_at">, result: AiResultRecord | null): PromptLibraryItem {
+function createPromptLibraryItem(item: Omit<PromptLibraryItem, "id" | "source_result_id" | "source_path" | "starred" | "created_at" | "generated">, result: AiResultRecord | null, generated = false): PromptLibraryItem {
   return {
-    id: crypto.randomUUID(),
+    id: generated && result ? `${result.id}:prompt:${item.prompt}` : crypto.randomUUID(),
     source_result_id: result?.id ?? null,
     source_path: result?.input_path ?? null,
     prompt: item.prompt,
@@ -503,29 +481,52 @@ function createPromptLibraryItem(item: Omit<PromptLibraryItem, "id" | "source_re
     size: item.size,
     changes: item.changes,
     starred: false,
-    created_at: new Date().toISOString(),
+    created_at: generated && result ? result.created_at : new Date().toISOString(),
+    generated,
   };
 }
 
-function extractCopyTexts(result: AiResultRecord) {
-  const texts = new Set<string>();
+function extractCopyLibraryItems(result: AiResultRecord, generated = false) {
+  const items: CopyLibraryItem[] = [];
   for (const item of result.analysis_json.items ?? []) {
-    for (const key of ["main_copy", "short_copy", "title", "cta", "angle"]) {
-      const value = item[key];
-      if (typeof value === "string" && value.trim()) {
-        texts.add(value.trim());
-      }
+    if (typeof item.main_copy === "string" && item.main_copy.trim()) {
+      items.push(createCopyLibraryItem(item.main_copy.trim(), "主文案", result, generated));
+    }
+    if (typeof item.short_copy === "string" && item.short_copy.trim()) {
+      items.push(createCopyLibraryItem(item.short_copy.trim(), "短文案", result, generated));
+    }
+    if (typeof item.title === "string" && item.title.trim()) {
+      items.push(createCopyLibraryItem(item.title.trim(), "广告标题", result, generated));
+    }
+    if (typeof item.cta === "string" && item.cta.trim()) {
+      items.push(createCopyLibraryItem(item.cta.trim(), "CTA", result, generated));
     }
   }
-  if (typeof result.analysis_json.extracted_prompt === "string") {
-    texts.add(result.analysis_json.extracted_prompt.trim());
-  }
-  for (const prompt of result.analysis_json.prompt_examples ?? []) {
-    if (prompt.trim()) {
-      texts.add(prompt.trim());
+  return dedupeCopyLibraryItems(items);
+}
+
+function dedupeCopyLibraryItems(items: CopyLibraryItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.source_result_id ?? "manual"}:${item.kind}:${item.text}`;
+    if (seen.has(key)) {
+      return false;
     }
-  }
-  return [...texts].filter(Boolean);
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupePromptLibraryItems(items: PromptLibraryItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.source_result_id ?? "manual"}:${item.prompt}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function extractPromptItems(result: AiResultRecord) {
@@ -569,17 +570,17 @@ function extractPromptItems(result: AiResultRecord) {
   });
 }
 
-function copyKind(result: AiResultRecord) {
-  if (result.analysis_json.result_type === "ad_copy_generation") {
-    return "广告文案";
-  }
-  if (result.analysis_json.result_type === "ad_title_generation") {
-    return "广告标题";
-  }
-  if (result.analysis_json.result_type === "creative_variation_prompts") {
-    return "裂变提示词";
-  }
-  return "分析提示词";
+function isAnalysisResult(result: AiResultRecord) {
+  const type = result.analysis_json.result_type;
+  return type !== "ad_copy_generation" && type !== "ad_title_generation" && type !== "creative_variation_prompts";
+}
+
+function isCopyResult(result: AiResultRecord) {
+  return result.analysis_json.result_type === "ad_copy_generation" || result.analysis_json.result_type === "ad_title_generation";
+}
+
+function isVariationResult(result: AiResultRecord) {
+  return result.analysis_json.result_type === "creative_variation_prompts";
 }
 
 function fileName(path: string) {
@@ -591,6 +592,40 @@ function copyText(text: string) {
     return;
   }
   void navigator.clipboard.writeText(text);
+}
+
+function copyCopyLibraryItem(item: CopyLibraryItem, items: CopyLibraryItem[]) {
+  if (!item.generated || !item.source_result_id) {
+    copyText(item.text);
+    return;
+  }
+  const group = items.filter((candidate) => candidate.generated && candidate.source_result_id === item.source_result_id);
+  copyText(group.map((candidate, index) => `${index + 1}. [${candidate.kind}] ${candidate.text}`).join("\n"));
+}
+
+function copyPromptLibraryItem(item: PromptLibraryItem, items: PromptLibraryItem[]) {
+  if (!item.generated || !item.source_result_id) {
+    copyText(item.prompt);
+    return;
+  }
+  const group = items.filter((candidate) => candidate.generated && candidate.source_result_id === item.source_result_id);
+  copyText(
+    group
+      .map((candidate, index) => {
+        const lines = [`${index + 1}. ${candidate.prompt}`];
+        if (candidate.negative_prompt) {
+          lines.push(`Negative: ${candidate.negative_prompt}`);
+        }
+        if (candidate.size) {
+          lines.push(`Size: ${candidate.size}`);
+        }
+        if (candidate.changes.length > 0) {
+          lines.push(`变化点: ${candidate.changes.join(" / ")}`);
+        }
+        return lines.join("\n");
+      })
+      .join("\n\n"),
+  );
 }
 
 function resultSubtitle(result: AiResultRecord) {
@@ -622,17 +657,40 @@ function numericScore(result: AiResultRecord) {
 
 function resultPrimaryText(result: AiResultRecord) {
   const value = result.analysis_json;
-  const first = value.items?.[0];
-  if (typeof first?.prompt === "string") {
-    return first.prompt;
+  if (value.result_type === "creative_variation_prompts") {
+    const prompts = extractPromptItems(result).map((item, index) => {
+      const lines = [`${index + 1}. ${item.prompt}`];
+      if (item.negative_prompt) {
+        lines.push(`Negative: ${item.negative_prompt}`);
+      }
+      if (item.size) {
+        lines.push(`Size: ${item.size}`);
+      }
+      if (item.changes.length > 0) {
+        lines.push(`变化点: ${item.changes.join(" / ")}`);
+      }
+      return lines.join("\n");
+    });
+    return prompts.join("\n\n");
   }
-  if (typeof first?.main_copy === "string") {
-    return first.main_copy;
+  if (value.result_type === "ad_copy_generation" || value.result_type === "ad_title_generation") {
+    return extractCopyLibraryItems(result)
+      .map((item, index) => `${index + 1}. [${item.kind}] ${item.text}`)
+      .join("\n");
   }
-  if (typeof first?.title === "string") {
-    return first.title;
+
+  const parts: string[] = [];
+  if (typeof value.extracted_prompt === "string" && value.extracted_prompt.trim()) {
+    parts.push(`反推提示词\n${value.extracted_prompt.trim()}`);
   }
-  return value.extracted_prompt ?? "";
+  const examples = value.prompt_examples?.filter((prompt) => prompt.trim()) ?? [];
+  if (examples.length > 0) {
+    parts.push(`提示词示例\n${examples.map((prompt, index) => `${index + 1}. ${prompt.trim()}`).join("\n")}`);
+  }
+  if (parts.length === 0 && typeof value.summary === "string") {
+    parts.push(value.summary);
+  }
+  return parts.join("\n\n");
 }
 
 function renderResultItems(result: AiResultRecord) {

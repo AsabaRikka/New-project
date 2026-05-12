@@ -100,6 +100,14 @@ export async function openTaskFolder(path: string): Promise<boolean> {
   return invoke<boolean>("open_task_folder", { path });
 }
 
+export async function cancelTask(taskId: string): Promise<boolean> {
+  if (!isTauriRuntime) {
+    return true;
+  }
+
+  return invoke<boolean>("cancel_task", { taskId });
+}
+
 export async function listAiResults(): Promise<AiResultRecord[]> {
   if (!isTauriRuntime) {
     return [];

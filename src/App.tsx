@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Library, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import type { AiProviderDescriptor } from "./lib/aiProvider";
-import { createTask, getAppConfig, listAiResults, listTasks, openTaskFolder, saveAppConfig } from "./lib/api";
+import { cancelTask, createTask, getAppConfig, listAiResults, listTasks, openTaskFolder, saveAppConfig } from "./lib/api";
 import type {
   AiResultRecord,
   AppConfig,
@@ -177,6 +177,10 @@ export function App() {
   }
 
   async function handleRunAiTask() {
+    if (inputs.length === 0) {
+      setStatusMessage("请先上传图片，再提交 AI 任务");
+      return null;
+    }
     return runTaskRequest(selectedAiTaskType, "single", [], `${projectName}-${selectedAiTaskType}`, "正在提交 AI 任务...");
   }
 
@@ -363,26 +367,33 @@ export function App() {
     }
   }
 
-  function handleRegenerateFromResult(result: AiResultRecord, mode: "reverse_prompt" | "prompt_template") {
+  async function handleCancelTask(task: TaskRecord) {
+    try {
+      await cancelTask(task.id);
+      setStatusMessage(`已取消 ${task.task_type}，正在停止后续处理`);
+      setTasks(await listTasks());
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "取消任务失败");
+    }
+  }
+
+  function handleRegenerateFromResult(result: AiResultRecord, mode: "reverse_prompt") {
     const extractedText = extractResultPromptText(result);
     setInputs([result.input_path]);
     setExecutionMode("single");
     setPipelineSteps([]);
     setActiveView("ai");
-    setSelectedAiTaskType(mode === "reverse_prompt" ? "ai_analyze" : "ai_generate_image");
+    setSelectedAiTaskType("ai_analyze");
     setBatchParams({
       ...defaultBatchParams,
       ...batchParams,
-      aiProductContext:
-        mode === "reverse_prompt"
-          ? `基于历史 AI 结果反推并重生成图片提示词。\n来源图片：${result.input_path}\n历史结果：${extractedText}`
-          : `基于历史 AI 结果整理为可复用提示词模板并重生成。\n来源图片：${result.input_path}\n模板素材：${extractedText}`,
-      aiReversePromptMode: mode === "reverse_prompt" ? "极致还原" : "适用豆包",
+      aiProductContext: `基于历史 AI 结果反推并重生成图片提示词。\n来源图片：${result.input_path}\n历史结果：${extractedText}`,
+      aiReversePromptMode: "极致还原",
       aiVariationDirection: "自由裂变",
-      aiPromptExampleCount: mode === "reverse_prompt" ? 8 : batchParams.aiPromptExampleCount,
-      aiGenerateCount: mode === "reverse_prompt" ? 5 : 8,
+      aiPromptExampleCount: 8,
+      aiGenerateCount: 5,
     });
-    setStatusMessage(mode === "reverse_prompt" ? "已填入反推提示词重生成参数，请确认后提交" : "已填入提示词模板重生成参数，请确认后提交");
+    setStatusMessage("已填入反推提示词重生成参数，请确认后提交");
   }
 
   if (!config) {
@@ -461,7 +472,7 @@ export function App() {
             taskTypes={batchTaskTypes}
           />
 
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
           <ProtocolPanel
             selectedTask={selectedTask}
             executionMode={executionMode}
@@ -504,10 +515,11 @@ export function App() {
             hideExecutionMode
             runLabel="提交后台任务"
             runningLabel="提交中..."
+            requireInputsMessage="请先上传图片"
           />
 
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
           <ProtocolPanel
             selectedTask={taskTypes.find((task) => task.type === selectedAiTaskType) ?? selectedTask}
             executionMode="single"
@@ -522,20 +534,20 @@ export function App() {
         {activeView === "library" && (
         <section className="grid-layout">
           <AiResultsPanel results={aiResults} onRegenerateFromResult={handleRegenerateFromResult} />
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
         </section>
         )}
 
         {activeView === "settings" && (
         <section className="grid-layout">
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
         </section>
         )}
 
         {activeView === "project" && (
         <section className="grid-layout">
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
           <ProtocolPanel
             selectedTask={selectedTask}
             executionMode={executionMode}
@@ -558,7 +570,7 @@ export function App() {
             </div>
             <p className="empty">对话式解决问题会在后续阶段接入。</p>
           </section>
-          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} onCancelTask={handleCancelTask} />
         </section>
         )}
       </section>
