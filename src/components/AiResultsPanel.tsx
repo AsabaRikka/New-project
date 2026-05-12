@@ -13,7 +13,7 @@ import type { AiResultRecord } from "../lib/types";
 
 type AiResultSort = "newest" | "score" | "starred" | "favorite";
 type LibrarySort = "newest" | "starred" | "source";
-type ResultTab = "results" | "copy";
+type ResultTab = "results" | "copy" | "prompt";
 
 interface CopyLibraryItem {
   id: string;
@@ -25,11 +25,24 @@ interface CopyLibraryItem {
   created_at: string;
 }
 
+interface PromptLibraryItem {
+  id: string;
+  source_result_id: string | null;
+  source_path: string | null;
+  prompt: string;
+  negative_prompt: string;
+  size: string;
+  changes: string[];
+  starred: boolean;
+  created_at: string;
+}
+
 interface AiResultState {
   favorites: string[];
   starred: string[];
   deleted: string[];
   copyLibrary: CopyLibraryItem[];
+  promptLibrary: PromptLibraryItem[];
 }
 
 interface AiResultsPanelProps {
@@ -49,6 +62,7 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     starred: [],
     deleted: [],
     copyLibrary: [],
+    promptLibrary: [],
   });
 
   useEffect(() => {
@@ -74,6 +88,18 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
       return right.created_at.localeCompare(left.created_at);
     });
   }, [librarySort, state.copyLibrary]);
+
+  const sortedPromptLibrary = useMemo(() => {
+    return [...state.promptLibrary].sort((left, right) => {
+      if (librarySort === "starred") {
+        return Number(right.starred) - Number(left.starred) || right.created_at.localeCompare(left.created_at);
+      }
+      if (librarySort === "source") {
+        return (left.source_path ?? "").localeCompare(right.source_path ?? "") || right.created_at.localeCompare(left.created_at);
+      }
+      return right.created_at.localeCompare(left.created_at);
+    });
+  }, [librarySort, state.promptLibrary]);
 
   function updateState(updater: (current: AiResultState) => AiResultState) {
     setState((current) => {
@@ -117,6 +143,24 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     });
   }
 
+  function addResultToPromptLibrary(result: AiResultRecord) {
+    const prompts = extractPromptItems(result);
+    if (prompts.length === 0) {
+      return;
+    }
+
+    updateState((current) => {
+      const existingPrompts = new Set(current.promptLibrary.map((item) => `${item.source_result_id ?? "manual"}:${item.prompt}`));
+      const nextItems = prompts
+        .filter((prompt) => !existingPrompts.has(`${result.id}:${prompt.prompt}`))
+        .map((prompt) => createPromptLibraryItem(prompt, result));
+      return {
+        ...current,
+        promptLibrary: [...nextItems, ...current.promptLibrary].slice(0, 300),
+      };
+    });
+  }
+
   function addManualCopy() {
     const text = manualCopy.trim();
     if (!text) {
@@ -143,6 +187,20 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     }));
   }
 
+  function togglePromptStar(itemId: string) {
+    updateState((current) => ({
+      ...current,
+      promptLibrary: current.promptLibrary.map((item) => (item.id === itemId ? { ...item, starred: !item.starred } : item)),
+    }));
+  }
+
+  function deletePrompt(itemId: string) {
+    updateState((current) => ({
+      ...current,
+      promptLibrary: current.promptLibrary.filter((item) => item.id !== itemId),
+    }));
+  }
+
   return (
     <section className="panel panel--wide">
       <div className="panel__header">
@@ -166,6 +224,13 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
           onClick={() => setActiveTab("copy")}
         >
           文案库
+        </button>
+        <button
+          className={activeTab === "prompt" ? "segmented-control__item segmented-control__item--active" : "segmented-control__item"}
+          type="button"
+          onClick={() => setActiveTab("prompt")}
+        >
+          裂变提示词库
         </button>
       </div>
 
@@ -198,13 +263,14 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   onToggleStar={() => toggleResultCollection(result.id, "starred")}
                   onDelete={() => deleteResult(result.id)}
                   onCopyToLibrary={() => addResultToCopyLibrary(result)}
+                  onPromptToLibrary={() => addResultToPromptLibrary(result)}
                   onRegenerate={onRegenerateFromResult}
                 />
               ))
             )}
           </div>
         </>
-      ) : (
+      ) : activeTab === "copy" ? (
         <>
           <div className="library-toolbar">
             <label>
@@ -256,6 +322,60 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
             )}
           </div>
         </>
+      ) : (
+        <>
+          <div className="library-toolbar">
+            <label>
+              <span>排序</span>
+              <select value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}>
+                <option value="newest">最新入库</option>
+                <option value="starred">标星优先</option>
+                <option value="source">来源图片</option>
+              </select>
+            </label>
+            <span className="library-count">{sortedPromptLibrary.length} 条提示词</span>
+          </div>
+
+          <div className="prompt-library-list">
+            {sortedPromptLibrary.length === 0 ? (
+              <p className="empty">裂变提示词库为空，可从 AI 分析结果一键入库</p>
+            ) : (
+              sortedPromptLibrary.map((item) => (
+                <article className={item.starred ? "prompt-library-card prompt-library-card--starred" : "prompt-library-card"} key={item.id}>
+                  <div className="prompt-library-card__main">
+                    <div className="prompt-library-card__header">
+                      <strong>{item.source_path ? fileName(item.source_path) : "裂变提示词"}</strong>
+                      {item.size && <span>{item.size}</span>}
+                    </div>
+                    <p>{item.prompt}</p>
+                    {item.negative_prompt && <span>Negative: {item.negative_prompt}</span>}
+                    {item.changes.length > 0 && (
+                      <div className="prompt-library-card__changes">
+                        {item.changes.slice(0, 6).map((change) => (
+                          <span key={change}>{change}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="copy-library-card__actions">
+                    <button className="tiny-button" type="button" onClick={() => copyText(item.prompt)}>
+                      <Copy size={14} />
+                      复制
+                    </button>
+                    <button className="tiny-button" type="button" onClick={() => togglePromptStar(item.id)}>
+                      <Star size={14} fill={item.starred ? "currentColor" : "none"} />
+                      {item.starred ? "已标星" : "标星"}
+                    </button>
+                    <button className="tiny-button tiny-button--danger" type="button" onClick={() => deletePrompt(item.id)}>
+                      <Trash2 size={14} />
+                      删除
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </>
       )}
     </section>
   );
@@ -269,6 +389,7 @@ function ResultCard({
   onToggleStar,
   onDelete,
   onCopyToLibrary,
+  onPromptToLibrary,
   onRegenerate,
 }: {
   result: AiResultRecord;
@@ -278,10 +399,12 @@ function ResultCard({
   onToggleStar: () => void;
   onDelete: () => void;
   onCopyToLibrary: () => void;
+  onPromptToLibrary: () => void;
   onRegenerate: (result: AiResultRecord, mode: "reverse_prompt" | "prompt_template") => void;
 }) {
   const primaryText = resultPrimaryText(result);
   const copyTexts = extractCopyTexts(result);
+  const promptItems = extractPromptItems(result);
   return (
     <article className={isStarred ? "ai-result-card ai-result-card--starred" : "ai-result-card"}>
       <div className="ai-result-card__thumb">
@@ -314,6 +437,10 @@ function ResultCard({
           <button className="tiny-button" type="button" onClick={onCopyToLibrary} disabled={copyTexts.length === 0}>
             <ImagePlus size={14} />
             入文案库
+          </button>
+          <button className="tiny-button" type="button" onClick={onPromptToLibrary} disabled={promptItems.length === 0}>
+            <ImagePlus size={14} />
+            入提示词库
           </button>
           <button className="tiny-button" type="button" onClick={() => onRegenerate(result, "reverse_prompt")}>
             <RefreshCcw size={14} />
@@ -366,10 +493,24 @@ function createCopyLibraryItem(text: string, result: AiResultRecord | null): Cop
   };
 }
 
+function createPromptLibraryItem(item: Omit<PromptLibraryItem, "id" | "source_result_id" | "source_path" | "starred" | "created_at">, result: AiResultRecord | null): PromptLibraryItem {
+  return {
+    id: crypto.randomUUID(),
+    source_result_id: result?.id ?? null,
+    source_path: result?.input_path ?? null,
+    prompt: item.prompt,
+    negative_prompt: item.negative_prompt,
+    size: item.size,
+    changes: item.changes,
+    starred: false,
+    created_at: new Date().toISOString(),
+  };
+}
+
 function extractCopyTexts(result: AiResultRecord) {
   const texts = new Set<string>();
   for (const item of result.analysis_json.items ?? []) {
-    for (const key of ["main_copy", "short_copy", "title", "cta", "angle", "prompt"]) {
+    for (const key of ["main_copy", "short_copy", "title", "cta", "angle"]) {
       const value = item[key];
       if (typeof value === "string" && value.trim()) {
         texts.add(value.trim());
@@ -385,6 +526,47 @@ function extractCopyTexts(result: AiResultRecord) {
     }
   }
   return [...texts].filter(Boolean);
+}
+
+function extractPromptItems(result: AiResultRecord) {
+  const items: Array<Omit<PromptLibraryItem, "id" | "source_result_id" | "source_path" | "starred" | "created_at">> = [];
+  for (const item of result.analysis_json.items ?? []) {
+    if (typeof item.prompt !== "string" || !item.prompt.trim()) {
+      continue;
+    }
+    items.push({
+      prompt: item.prompt.trim(),
+      negative_prompt: typeof item.negative_prompt === "string" ? item.negative_prompt.trim() : "",
+      size: typeof item.size === "string" ? item.size.trim() : "",
+      changes: Array.isArray(item.changes) ? item.changes.filter((change): change is string => typeof change === "string") : [],
+    });
+  }
+  if (typeof result.analysis_json.extracted_prompt === "string" && result.analysis_json.extracted_prompt.trim()) {
+    items.push({
+      prompt: result.analysis_json.extracted_prompt.trim(),
+      negative_prompt: "",
+      size: "",
+      changes: ["从素材分析结果提取"],
+    });
+  }
+  for (const prompt of result.analysis_json.prompt_examples ?? []) {
+    if (prompt.trim()) {
+      items.push({
+        prompt: prompt.trim(),
+        negative_prompt: "",
+        size: "",
+        changes: ["提示词示例"],
+      });
+    }
+  }
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.prompt)) {
+      return false;
+    }
+    seen.add(item.prompt);
+    return true;
+  });
 }
 
 function copyKind(result: AiResultRecord) {
@@ -520,6 +702,7 @@ function loadAiResultState(): AiResultState {
       starred: stringArray(parsed.starred),
       deleted: stringArray(parsed.deleted),
       copyLibrary: Array.isArray(parsed.copyLibrary) ? parsed.copyLibrary.filter(isCopyLibraryItem) : [],
+      promptLibrary: Array.isArray(parsed.promptLibrary) ? parsed.promptLibrary.filter(isPromptLibraryItem) : [],
     };
   } catch {
     return {
@@ -527,6 +710,7 @@ function loadAiResultState(): AiResultState {
       starred: [],
       deleted: [],
       copyLibrary: [],
+      promptLibrary: [],
     };
   }
 }
@@ -545,4 +729,12 @@ function isCopyLibraryItem(value: unknown): value is CopyLibraryItem {
   }
   const candidate = value as Partial<CopyLibraryItem>;
   return Boolean(candidate.id && candidate.text && candidate.kind && candidate.created_at);
+}
+
+function isPromptLibraryItem(value: unknown): value is PromptLibraryItem {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<PromptLibraryItem>;
+  return Boolean(candidate.id && candidate.prompt && candidate.created_at);
 }

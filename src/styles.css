@@ -435,7 +435,8 @@ code {
 }
 
 .ai-result-grid,
-.copy-library-list {
+.copy-library-list,
+.prompt-library-list {
   display: grid;
   gap: 12px;
 }
@@ -452,7 +453,8 @@ code {
 }
 
 .ai-result-card--starred,
-.copy-library-card--starred {
+.copy-library-card--starred,
+.prompt-library-card--starred {
   border-color: #d0b45f;
   background: #fffdf3;
 }
@@ -556,7 +558,8 @@ code {
   margin-bottom: 14px;
 }
 
-.copy-library-card {
+.copy-library-card,
+.prompt-library-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -568,13 +571,15 @@ code {
   border-radius: 8px;
 }
 
-.copy-library-card p {
+.copy-library-card p,
+.prompt-library-card p {
   margin: 5px 0;
   color: #3c4c5d;
   line-height: 1.5;
 }
 
-.copy-library-card span {
+.copy-library-card span,
+.prompt-library-card span {
   color: #647588;
   font-size: 12px;
 }
@@ -584,6 +589,33 @@ code {
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.prompt-library-card__main {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.prompt-library-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.prompt-library-card__changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.prompt-library-card__changes span {
+  padding: 4px 7px;
+  color: #43665f;
+  background: #e9f4f0;
+  border-radius: 999px;
 }
 
 .toolbar {
@@ -951,7 +983,8 @@ code {
   .inline-field,
   .ai-result-card,
   .copy-library-add,
-  .copy-library-card {
+  .copy-library-card,
+  .prompt-library-card {
     grid-template-columns: 1fr;
   }
 
