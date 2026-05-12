@@ -3,6 +3,8 @@ import {
   CheckSquare,
   Copy,
   FileJson,
+  ChevronDown,
+  ChevronRight,
   LayoutGrid,
   List,
   PencilLine,
@@ -64,6 +66,7 @@ interface AiResultState {
   promptLibrary: PromptLibraryItem[];
   groups: Record<string, string>;
   labels: Record<string, string>;
+  hiddenPromptLibraryIds: string[];
 }
 
 interface AiResultsPanelProps {
@@ -83,6 +86,9 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [groupName, setGroupName] = useState("");
   const [groupFilter, setGroupFilter] = useState("all");
+  const [expandedPromptIds, setExpandedPromptIds] = useState<string[]>([]);
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
+  const [editingLabelValue, setEditingLabelValue] = useState("");
   const [state, setState] = useState<AiResultState>({
     favorites: [],
     starred: [],
@@ -91,6 +97,7 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     promptLibrary: [],
     groups: {},
     labels: {},
+    hiddenPromptLibraryIds: [],
   });
 
   useEffect(() => {
@@ -140,10 +147,12 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
 
   const sortedPromptLibrary = useMemo(() => {
     return sortPromptLibrary(
-      [...generatedPromptEntries, ...manualPromptEntries].filter((item) => matchesGroupFilter(item.id, groupFilter, state.groups)),
+      [...generatedPromptEntries, ...manualPromptEntries].filter(
+        (item) => !state.hiddenPromptLibraryIds.includes(item.id) && matchesGroupFilter(item.id, groupFilter, state.groups),
+      ),
       librarySort,
     );
-  }, [generatedPromptEntries, groupFilter, librarySort, manualPromptEntries, state.groups]);
+  }, [generatedPromptEntries, groupFilter, librarySort, manualPromptEntries, state.groups, state.hiddenPromptLibraryIds]);
 
   const sortedCopyLibrary = useMemo(() => {
     return sortCopyLibrary(
@@ -224,12 +233,13 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
     setSelectedIds([]);
   }
 
-  function renameEntry(entryId: string, currentName: string) {
-    const nextName = window.prompt("请输入新的名称，留空可清除", currentName);
-    if (nextName === null) {
-      return;
-    }
-    const trimmed = nextName.trim();
+  function startRename(entryId: string, currentName: string) {
+    setEditingLabelId(entryId);
+    setEditingLabelValue(currentName);
+  }
+
+  function saveRename(entryId: string) {
+    const trimmed = editingLabelValue.trim();
     updateState((current) => {
       const labels = { ...current.labels };
       if (trimmed) {
@@ -239,6 +249,13 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
       }
       return { ...current, labels };
     });
+    setEditingLabelId(null);
+    setEditingLabelValue("");
+  }
+
+  function cancelRename() {
+    setEditingLabelId(null);
+    setEditingLabelValue("");
   }
 
   function applyGroupToSelected() {
@@ -312,10 +329,35 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
   }
 
   function deletePrompt(itemId: string) {
+    const promptEntry = sortedPromptLibrary.find((item) => item.id === itemId);
+    if (promptEntry?.generated) {
+      updateState((current) => ({
+        ...current,
+        hiddenPromptLibraryIds: current.hiddenPromptLibraryIds.includes(itemId)
+          ? current.hiddenPromptLibraryIds
+          : [itemId, ...current.hiddenPromptLibraryIds],
+      }));
+      setSelectedIds((current) => current.filter((id) => id !== itemId));
+      if (editingLabelId === itemId) {
+        cancelRename();
+      }
+      return;
+    }
+
     updateState((current) => ({
       ...current,
       promptLibrary: current.promptLibrary.filter((item) => item.id !== itemId),
     }));
+    setSelectedIds((current) => current.filter((id) => id !== itemId));
+    if (editingLabelId === itemId) {
+      cancelRename();
+    }
+  }
+
+  function togglePromptExpanded(entryId: string) {
+    setExpandedPromptIds((current) =>
+      current.includes(entryId) ? current.filter((id) => id !== entryId) : [entryId, ...current],
+    );
   }
 
   function copySelectedCopyItems() {
@@ -463,7 +505,12 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   onToggleFavorite={() => toggleResultCollection(result.id, "favorites")}
                   onToggleStar={() => toggleResultCollection(result.id, "starred")}
                   onDelete={() => deleteResult(result.id)}
-                  onRename={() => renameEntry(result.id, state.labels[result.id] ?? fileName(result.input_path))}
+                  onRename={() => startRename(result.id, state.labels[result.id] ?? fileName(result.input_path))}
+                  onSaveRename={() => saveRename(result.id)}
+                  onCancelRename={cancelRename}
+                  isEditing={editingLabelId === result.id}
+                  editValue={editingLabelValue}
+                  onEditValueChange={setEditingLabelValue}
                   onRegenerate={onRegenerateFromResult}
                 />
               ))
@@ -495,10 +542,17 @@ export function AiResultsPanel({ results, onRegenerateFromResult }: AiResultsPan
                   displayName={state.labels[entry.id] ?? ""}
                   isSelected={selectedIds.includes(entry.id)}
                   onToggleSelected={() => toggleSelected(entry.id)}
-                  onRename={() => renameEntry(entry.id, state.labels[entry.id] ?? promptEntryFallbackName(entry))}
+                  onRename={() => startRename(entry.id, state.labels[entry.id] ?? promptEntryFallbackName(entry))}
+                  onSaveRename={() => saveRename(entry.id)}
+                  onCancelRename={cancelRename}
+                  isEditing={editingLabelId === entry.id}
+                  editValue={editingLabelValue}
+                  onEditValueChange={setEditingLabelValue}
                   onToggleStar={() => togglePromptStar(entry.id)}
                   onDelete={() => deletePrompt(entry.id)}
                   onCopy={() => copyPromptEntry(entry)}
+                  onToggleExpanded={() => togglePromptExpanded(entry.id)}
+                  isExpanded={expandedPromptIds.includes(entry.id)}
                 />
               ))
             )}
@@ -600,6 +654,11 @@ function ResultCard({
   onToggleStar,
   onDelete,
   onRename,
+  onSaveRename,
+  onCancelRename,
+  isEditing,
+  editValue,
+  onEditValueChange,
   onRegenerate,
 }: {
   result: AiResultRecord;
@@ -613,6 +672,11 @@ function ResultCard({
   onToggleStar: () => void;
   onDelete: () => void;
   onRename: () => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  isEditing: boolean;
+  editValue: string;
+  onEditValueChange: (value: string) => void;
   onRegenerate: (result: AiResultRecord, mode: "reverse_prompt") => void;
 }) {
   const primaryText = resultPrimaryText(result);
@@ -646,10 +710,35 @@ function ResultCard({
                 <Copy size={14} />
                 复制
               </button>
-              <button className="tiny-button" type="button" onClick={onRename}>
-                <PencilLine size={14} />
-                重命名
-              </button>
+              {isEditing ? (
+                <>
+                  <input
+                    className="rename-inline-input"
+                    value={editValue}
+                    onChange={(event) => onEditValueChange(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        onSaveRename();
+                      }
+                      if (event.key === "Escape") {
+                        onCancelRename();
+                      }
+                    }}
+                    autoFocus
+                  />
+                  <button className="tiny-button" type="button" onClick={onSaveRename}>
+                    保存
+                  </button>
+                  <button className="tiny-button" type="button" onClick={onCancelRename}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button className="tiny-button" type="button" onClick={onRename}>
+                  <PencilLine size={14} />
+                  重命名
+                </button>
+              )}
               <button className="tiny-button" type="button" onClick={onToggleFavorite}>
                 <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
                 {isFavorite ? "已收藏" : "收藏"}
@@ -1004,18 +1093,32 @@ function PromptLibraryCard({
   isSelected,
   onToggleSelected,
   onRename,
+  onSaveRename,
+  onCancelRename,
+  isEditing,
+  editValue,
+  onEditValueChange,
   onToggleStar,
   onDelete,
   onCopy,
+  onToggleExpanded,
+  isExpanded,
 }: {
   entry: PromptLibraryEntry;
   displayName: string;
   isSelected: boolean;
   onToggleSelected: () => void;
   onRename: () => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  isEditing: boolean;
+  editValue: string;
+  onEditValueChange: (value: string) => void;
   onToggleStar: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  onToggleExpanded: () => void;
+  isExpanded: boolean;
 }) {
   const title = displayName.trim() || promptEntryFallbackName(entry);
   const subtitle = entry.source_path ? fileName(entry.source_path) : entry.generated ? "AI 裂变生成" : "手动录入";
@@ -1041,41 +1144,68 @@ function PromptLibraryCard({
         <div className="prompt-library-card__summary">
           <span className="library-group-chip">{entry.prompts.length} 条</span>
           {entry.generated && <span className="library-group-chip">AI 裂变生成</span>}
+          <button className="tiny-button" type="button" onClick={onToggleExpanded}>
+            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {isExpanded ? "收起提示词" : "展开提示词"}
+          </button>
         </div>
-        <div className="prompt-library-card__group">
-          {entry.prompts.map((prompt, index) => (
-            <div className="prompt-library-card__entry" key={prompt.id}>
-              <strong>
-                {index + 1}. {prompt.prompt}
-              </strong>
-              {prompt.negative_prompt && <span>Negative: {prompt.negative_prompt}</span>}
-              {prompt.size && <span>Size: {prompt.size}</span>}
-              {prompt.changes.length > 0 && <span>变化点: {prompt.changes.join(" / ")}</span>}
-            </div>
-          ))}
-        </div>
+        {isExpanded && (
+          <div className="prompt-library-card__group">
+            {entry.prompts.map((prompt, index) => (
+              <div className="prompt-library-card__entry" key={prompt.id}>
+                <strong>
+                  {index + 1}. {prompt.prompt}
+                </strong>
+                {prompt.negative_prompt && <span>Negative: {prompt.negative_prompt}</span>}
+                {prompt.size && <span>Size: {prompt.size}</span>}
+                {prompt.changes.length > 0 && <span>变化点: {prompt.changes.join(" / ")}</span>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="copy-library-card__actions">
         <button className="tiny-button" type="button" onClick={onCopy}>
           <Copy size={14} />
           复制全部
         </button>
-        <button className="tiny-button" type="button" onClick={onRename}>
-          <PencilLine size={14} />
-          重命名
-        </button>
-        {!entry.generated && (
+        {isEditing ? (
           <>
-            <button className="tiny-button" type="button" onClick={onToggleStar}>
-              <Star size={14} fill={entry.starred ? "currentColor" : "none"} />
-              {entry.starred ? "已标星" : "标星"}
+            <input
+              className="rename-inline-input"
+              value={editValue}
+              onChange={(event) => onEditValueChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  onSaveRename();
+                }
+                if (event.key === "Escape") {
+                  onCancelRename();
+                }
+              }}
+              autoFocus
+            />
+            <button className="tiny-button" type="button" onClick={onSaveRename}>
+              保存
             </button>
-            <button className="tiny-button tiny-button--danger" type="button" onClick={onDelete}>
-              <Trash2 size={14} />
-              删除
+            <button className="tiny-button" type="button" onClick={onCancelRename}>
+              取消
             </button>
           </>
-        )}
+        ) : (
+            <button className="tiny-button" type="button" onClick={onRename}>
+              <PencilLine size={14} />
+              重命名
+            </button>
+          )}
+        <button className="tiny-button" type="button" onClick={onToggleStar}>
+          <Star size={14} fill={entry.starred ? "currentColor" : "none"} />
+          {entry.starred ? "已标星" : "标星"}
+        </button>
+        <button className="tiny-button tiny-button--danger" type="button" onClick={onDelete}>
+          <Trash2 size={14} />
+          删除
+        </button>
       </div>
     </article>
   );
@@ -1216,6 +1346,7 @@ function loadAiResultState(): AiResultState {
       promptLibrary: Array.isArray(parsed.promptLibrary) ? parsed.promptLibrary.filter(isPromptLibraryItem) : [],
       groups: stringRecord(parsed.groups),
       labels: stringRecord(parsed.labels),
+      hiddenPromptLibraryIds: stringArray(parsed.hiddenPromptLibraryIds),
     };
   } catch {
     return {
@@ -1226,6 +1357,7 @@ function loadAiResultState(): AiResultState {
       promptLibrary: [],
       groups: {},
       labels: {},
+      hiddenPromptLibraryIds: [],
     };
   }
 }

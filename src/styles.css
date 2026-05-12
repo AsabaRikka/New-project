@@ -676,6 +676,16 @@ code {
   justify-content: flex-end;
 }
 
+.rename-inline-input {
+  min-width: 180px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: #314253;
+  background: #ffffff;
+  border: 1px solid #cbd8e1;
+  border-radius: 8px;
+}
+
 .prompt-library-card__main {
   display: grid;
   min-width: 0;
@@ -701,6 +711,9 @@ code {
 .prompt-library-card__group {
   display: grid;
   gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .prompt-library-card__entry {
