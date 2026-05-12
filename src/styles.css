@@ -475,6 +475,11 @@ code {
   font-size: 12px;
 }
 
+.segmented-control--results,
+.segmented-control--copy-mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .segmented-control--compact {
   margin-top: 12px;
 }
@@ -484,6 +489,14 @@ code {
 .prompt-library-list {
   display: grid;
   gap: 12px;
+}
+
+.ai-result-grid--tile {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.ai-result-grid--detail {
+  grid-template-columns: 1fr;
 }
 
 .ai-result-card {
@@ -518,6 +531,21 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.ai-result-card--tile {
+  grid-template-columns: 1fr;
+}
+
+.ai-result-card--tile .ai-result-card__thumb {
+  min-height: 180px;
+}
+
+.ai-result-card__tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .ai-result-card__body {
@@ -623,6 +651,18 @@ code {
   line-height: 1.5;
 }
 
+.copy-library-card__text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.copy-library-card__text--multiline {
+  white-space: pre-wrap;
+  -webkit-line-clamp: unset;
+}
+
 .copy-library-card span,
 .prompt-library-card span {
   color: #647588;
@@ -642,7 +682,55 @@ code {
   gap: 8px;
 }
 
-.prompt-library-card:has(.prompt-library-card__thumb) {
+.prompt-library-card {
+  grid-template-columns: 22px 92px minmax(0, 1fr) auto;
+}
+
+.prompt-library-card__thumb--empty {
+  display: grid;
+  place-items: center;
+  color: #607282;
+}
+
+.prompt-library-card__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.prompt-library-card__group {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-library-card__entry {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  background: #ffffff;
+  border: 1px solid #e5ebf0;
+  border-radius: 6px;
+}
+
+.prompt-library-card__entry strong,
+.prompt-library-card__entry span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-library-card__entry strong {
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.prompt-library-card__entry span {
+  display: block;
+  color: #5f6f81;
+  font-size: 12px;
+  white-space: normal;
+}
+
+.prompt-library-card:has(.prompt-library-card__thumb--empty) {
   grid-template-columns: 22px 92px minmax(0, 1fr) auto;
 }
 
