@@ -642,12 +642,29 @@ export function BatchToolPanel({
             </select>
           </label>
           {taskType === "ai_analyze" ? (
-            <NumberField
-              label="提示词示例数"
-              help="控制 AI 广告分析结果里生成多少条可复用提示词示例。只影响输出数量，不决定 AI 的专业判断方向。"
-              value={params.aiPromptExampleCount}
-              onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })}
-            />
+            <>
+              <NumberField
+                label="提示词示例数"
+                help="控制 AI 广告分析结果里生成多少条可复用提示词示例。只影响输出数量，不决定 AI 的专业判断方向。"
+                value={params.aiPromptExampleCount}
+                onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })}
+              />
+              <label>
+                <FieldLabel
+                  text="反推提示词生成强度"
+                  help="控制 AI 广告分析在扒原图生成提示词时，更偏向极致还原、风格还原、主体还原，或适配豆包、MJ、Image2、Nano Banana 等不同模型习惯。"
+                />
+                <select value={params.aiReversePromptMode} onChange={(event) => updateParams({ aiReversePromptMode: event.target.value })}>
+                  <option value="极致还原">极致还原</option>
+                  <option value="风格还原">风格还原</option>
+                  <option value="主体还原">主体还原</option>
+                  <option value="适用豆包">适用豆包</option>
+                  <option value="适用mj">适用 MJ</option>
+                  <option value="适用image2">适用 Image2</option>
+                  <option value="适用nano banano">适用 Nano Banano</option>
+                </select>
+              </label>
+            </>
           ) : (
             <>
               <NumberField label={taskType === "ai_generate_image" ? "裂变提示词数量" : "生成数量"} value={params.aiGenerateCount} onChange={(aiGenerateCount) => updateParams({ aiGenerateCount })} />
@@ -667,21 +684,6 @@ export function BatchToolPanel({
               </label>
               {taskType === "ai_generate_image" && (
                 <>
-                  <label>
-                    <FieldLabel
-                      text="反推提示词生成强度"
-                      help="控制生成提示词更偏向还原原图、还原风格、还原主体，或适配豆包、MJ、Image2、Nano Banana 等不同模型习惯。"
-                    />
-                    <select value={params.aiReversePromptMode} onChange={(event) => updateParams({ aiReversePromptMode: event.target.value })}>
-                      <option value="极致还原">极致还原</option>
-                      <option value="风格还原">风格还原</option>
-                      <option value="主体还原">主体还原</option>
-                      <option value="适用豆包">适用豆包</option>
-                      <option value="适用mj">适用 MJ</option>
-                      <option value="适用image2">适用 Image2</option>
-                      <option value="适用nano banano">适用 Nano Banano</option>
-                    </select>
-                  </label>
                   <label>
                     <FieldLabel
                       text="裂变方向"

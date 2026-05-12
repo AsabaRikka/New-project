@@ -369,7 +369,7 @@ export function App() {
     setExecutionMode("single");
     setPipelineSteps([]);
     setActiveView("ai");
-    setSelectedAiTaskType("ai_generate_image");
+    setSelectedAiTaskType(mode === "reverse_prompt" ? "ai_analyze" : "ai_generate_image");
     setBatchParams({
       ...defaultBatchParams,
       ...batchParams,
@@ -378,7 +378,8 @@ export function App() {
           ? `基于历史 AI 结果反推并重生成图片提示词。\n来源图片：${result.input_path}\n历史结果：${extractedText}`
           : `基于历史 AI 结果整理为可复用提示词模板并重生成。\n来源图片：${result.input_path}\n模板素材：${extractedText}`,
       aiReversePromptMode: mode === "reverse_prompt" ? "极致还原" : "适用豆包",
-      aiVariationDirection: mode === "reverse_prompt" ? "主体还原" : "自由裂变",
+      aiVariationDirection: "自由裂变",
+      aiPromptExampleCount: mode === "reverse_prompt" ? 8 : batchParams.aiPromptExampleCount,
       aiGenerateCount: mode === "reverse_prompt" ? 5 : 8,
     });
     setStatusMessage(mode === "reverse_prompt" ? "已填入反推提示词重生成参数，请确认后提交" : "已填入提示词模板重生成参数，请确认后提交");
