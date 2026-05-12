@@ -2032,6 +2032,8 @@ fn process_ai_generation_task(
     let count = read_u32(params, "aiGenerateCount", 5).clamp(1, 20);
     let tone = read_string(params, "aiCopyTone", "高转化");
     let audience = read_string(params, "aiTargetAudience", "泛广告受众");
+    let reverse_prompt_mode = read_string(params, "aiReversePromptMode", "极致还原");
+    let variation_direction = read_string(params, "aiVariationDirection", "参考我的小游戏风格裂变");
     let mut results = Vec::new();
 
     fs::create_dir_all(output_dir)?;
@@ -2050,6 +2052,8 @@ fn process_ai_generation_task(
                 &product_context,
                 &tone,
                 &audience,
+                &reverse_prompt_mode,
+                &variation_direction,
                 count,
             )?;
             let original_output = unique_path(&output_dir.join(file_name(&input)));
@@ -2126,6 +2130,8 @@ fn generate_ai_protocol_asset(
     product_context: &str,
     tone: &str,
     audience: &str,
+    reverse_prompt_mode: &str,
+    variation_direction: &str,
     count: u32,
 ) -> AppResult<serde_json::Value> {
     let image_data_url = image_data_url(input)?;
@@ -2137,6 +2143,8 @@ fn generate_ai_protocol_asset(
         product_context,
         tone,
         audience,
+        reverse_prompt_mode,
+        variation_direction,
         count,
     );
     let client = reqwest::blocking::Client::builder()
@@ -2644,6 +2652,8 @@ fn build_ai_generation_prompt(
     product_context: &str,
     tone: &str,
     audience: &str,
+    reverse_prompt_mode: &str,
+    variation_direction: &str,
     count: u32,
 ) -> String {
     let file = file_name(input);
@@ -2655,7 +2665,7 @@ fn build_ai_generation_prompt(
             "请基于这张广告图片生成匹配广告标题。输出语言：{language}。平台/投放场景：{platform}。语气：{tone}。目标人群：{audience}。产品或业务补充：{product_context}。文件名：{file}。请生成 {count} 个广告标题，包含标题、角度、适用平台、字符数、CTA 倾向、风险提示和评分。"
         ),
         AiGenerationKind::Variation => format!(
-            "请基于这张广告图片进行创意裂变与提示词工程。输出语言：{language}。平台/投放场景：{platform}。目标人群：{audience}。产品或业务补充：{product_context}。文件名：{file}。请提取主体、场景、风格、构图、色彩、促销角度、目标人群等裂变变量，并生成 {count} 组可复用图片裂变提示词。每组需要包含裂变类型、提示词、负向提示词、推荐尺寸、变化点、复用建议和评分。"
+            "请基于这张广告图片进行创意裂变、反推提示词与提示词工程。输出语言：{language}。平台/投放场景：{platform}。目标人群：{audience}。反推提示词生成强度/适配目标：{reverse_prompt_mode}。裂变方向：{variation_direction}。产品或业务补充：{product_context}。文件名：{file}。请先按“{reverse_prompt_mode}”决定提示词细节密度、还原重点与模型语法偏好；再按“{variation_direction}”控制裂变变量的取舍。请提取主体、场景、风格、构图、色彩、促销角度、目标人群等裂变变量，并生成 {count} 组可复用图片裂变提示词。每组需要包含裂变类型、提示词、负向提示词、推荐尺寸、变化点、复用建议和评分。"
         ),
     }
 }

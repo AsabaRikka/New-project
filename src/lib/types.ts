@@ -129,6 +129,8 @@ export interface BatchParams {
   aiGenerateCount: number;
   aiCopyTone: string;
   aiTargetAudience: string;
+  aiReversePromptMode: string;
+  aiVariationDirection: string;
 }
 
 export interface TaskRecord {

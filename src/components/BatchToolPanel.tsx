@@ -665,6 +665,41 @@ export function BatchToolPanel({
                 <span>目标人群</span>
                 <input value={params.aiTargetAudience} onChange={(event) => updateParams({ aiTargetAudience: event.target.value })} placeholder="例如：新手妈妈、二次元玩家、通勤白领" />
               </label>
+              {taskType === "ai_generate_image" && (
+                <>
+                  <label>
+                    <FieldLabel
+                      text="反推提示词生成强度"
+                      help="控制生成提示词更偏向还原原图、还原风格、还原主体，或适配豆包、MJ、Image2、Nano Banana 等不同模型习惯。"
+                    />
+                    <select value={params.aiReversePromptMode} onChange={(event) => updateParams({ aiReversePromptMode: event.target.value })}>
+                      <option value="极致还原">极致还原</option>
+                      <option value="风格还原">风格还原</option>
+                      <option value="主体还原">主体还原</option>
+                      <option value="适用豆包">适用豆包</option>
+                      <option value="适用mj">适用 MJ</option>
+                      <option value="适用image2">适用 Image2</option>
+                      <option value="适用nano banano">适用 Nano Banano</option>
+                    </select>
+                  </label>
+                  <label>
+                    <FieldLabel
+                      text="裂变方向"
+                      help="控制裂变提示词优先改哪些变量。小游戏风格裂变会尽量保留投放素材的游戏感、爽点与起量逻辑。"
+                    />
+                    <select value={params.aiVariationDirection} onChange={(event) => updateParams({ aiVariationDirection: event.target.value })}>
+                      <option value="参考我的小游戏风格裂变">参考我的小游戏风格裂变</option>
+                      <option value="自由裂变">自由裂变</option>
+                      <option value="情节裂变">情节裂变</option>
+                      <option value="风格裂变">风格裂变</option>
+                      <option value="主体裂变">主体裂变</option>
+                      <option value="场景裂变">场景裂变</option>
+                      <option value="构图裂变">构图裂变</option>
+                      <option value="卖点裂变">卖点裂变</option>
+                    </select>
+                  </label>
+                </>
+              )}
             </>
           )}
           <label className="form-grid__full">
