@@ -1954,9 +1954,14 @@ impl AiTaskContext {
 
 fn build_ai_http_client(config: &AiProviderConfig) -> AppResult<reqwest::blocking::Client> {
     let mut builder = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(
-        config.timeout_seconds.max(10),
+        config.timeout_seconds.max(120),
     ));
-    if let Some(proxy_url) = config.proxy_url.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(proxy_url) = config
+        .proxy_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
     }
     Ok(builder.build()?)
@@ -2118,22 +2123,15 @@ fn analyze_ad_creative_image(
         "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。",
     );
 
-    match request_responses_analysis(
+    request_vision_json_with_fallback(
         &client,
         ai_context,
         &prompt,
         &image_data_url,
         &system_prompt,
-    ) {
-        Ok(value) => Ok(value),
-        Err(_) => request_responses_plain_json(
-            &client,
-            ai_context,
-            &prompt,
-            &image_data_url,
-            &system_prompt,
-        ),
-    }
+        "ad_creative_analysis",
+        ad_analysis_schema(),
+    )
 }
 
 fn generate_ai_protocol_asset(
@@ -2181,7 +2179,7 @@ fn generate_ai_protocol_asset(
     };
     let system_prompt = build_system_prompt(persona, role_prompt);
 
-    let generated = match request_responses_json(
+    let generated = request_vision_json_with_fallback(
         &client,
         ai_context,
         &prompt,
@@ -2189,16 +2187,7 @@ fn generate_ai_protocol_asset(
         &system_prompt,
         schema_name,
         schema.clone(),
-    ) {
-        Ok(value) => Ok(value),
-        Err(_) => request_responses_plain_json(
-            &client,
-            ai_context,
-            &prompt,
-            &image_data_url,
-            &system_prompt,
-        ),
-    }?;
+    )?;
     Ok(normalize_ai_generation_result(generated, kind))
 }
 
@@ -2232,22 +2221,44 @@ fn build_system_prompt(persona: &str, role_instruction: &str) -> String {
     )
 }
 
-fn request_responses_analysis(
+fn request_vision_json_with_fallback(
     client: &reqwest::blocking::Client,
     ai_context: &AiTaskContext,
     prompt: &str,
     image_data_url: &str,
     system_prompt: &str,
+    schema_name: &str,
+    schema: serde_json::Value,
 ) -> AppResult<serde_json::Value> {
-    request_responses_json(
+    let mut failures = Vec::new();
+
+    match request_responses_json(
         client,
         ai_context,
         prompt,
         image_data_url,
         system_prompt,
-        "ad_creative_analysis",
-        ad_analysis_schema(),
-    )
+        schema_name,
+        schema,
+    ) {
+        Ok(value) => return Ok(value),
+        Err(error) => failures.push(format!("responses strict: {}", app_error_message(&error))),
+    }
+
+    match request_responses_plain_json(client, ai_context, prompt, image_data_url, system_prompt) {
+        Ok(value) => return Ok(value),
+        Err(error) => failures.push(format!("responses json: {}", app_error_message(&error))),
+    }
+
+    match request_chat_json(client, ai_context, prompt, image_data_url, system_prompt) {
+        Ok(value) => return Ok(value),
+        Err(error) => failures.push(format!("chat.completions: {}", app_error_message(&error))),
+    }
+
+    Err(AppError::InvalidParams(format!(
+        "AI 请求失败：{}",
+        failures.join("；")
+    )))
 }
 
 fn request_responses_json(
@@ -2293,11 +2304,11 @@ fn request_responses_json(
         let url = join_api_endpoint(&base_url, "responses");
         match send_ai_json_request(
             client
-            .post(url)
-            .bearer_auth(&ai_context.api_key)
-            .json(&body),
-        )
-        {
+                .post(url)
+                .bearer_auth(&ai_context.api_key)
+                .json(&body),
+            ai_context.config.max_retries,
+        ) {
             Ok(response) => {
                 return parse_model_json_output(&response);
             }
@@ -2340,11 +2351,54 @@ fn request_responses_plain_json(
         let url = join_api_endpoint(&base_url, "responses");
         match send_ai_json_request(
             client
-            .post(url)
-            .bearer_auth(&ai_context.api_key)
-            .json(&body),
-        )
-        {
+                .post(url)
+                .bearer_auth(&ai_context.api_key)
+                .json(&body),
+            ai_context.config.max_retries,
+        ) {
+            Ok(response) => {
+                return parse_model_json_output(&response);
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
+}
+
+fn request_chat_json(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+    system_prompt: &str,
+) -> AppResult<serde_json::Value> {
+    let body = json!({
+        "model": ai_context.config.vision_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": format!("{system_prompt}\n\n请只输出一个 JSON 对象，不要输出 Markdown、解释或代码块。")
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": image_data_url } }
+                ]
+            }
+        ],
+        "response_format": { "type": "json_object" }
+    });
+    let mut last_error: Option<AppError> = None;
+    for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
+        let url = join_api_endpoint(&base_url, "chat/completions");
+        match send_ai_json_request(
+            client
+                .post(url)
+                .bearer_auth(&ai_context.api_key)
+                .json(&body),
+            ai_context.config.max_retries,
+        ) {
             Ok(response) => {
                 return parse_model_json_output(&response);
             }
@@ -2355,6 +2409,38 @@ fn request_responses_plain_json(
 }
 
 fn send_ai_json_request(
+    request: reqwest::blocking::RequestBuilder,
+    max_retries: u8,
+) -> AppResult<serde_json::Value> {
+    if request.try_clone().is_none() {
+        return send_ai_json_request_once(request);
+    }
+
+    let attempts = max_retries.min(5) + 1;
+    let mut last_error: Option<AppError> = None;
+    for attempt in 0..attempts {
+        let request_attempt = request
+            .try_clone()
+            .ok_or_else(|| AppError::InvalidParams("请求体无法重试，请重新提交任务".to_string()))?;
+        match send_ai_json_request_once(request_attempt) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let should_retry = should_retry_ai_request(&error) && attempt + 1 < attempts;
+                last_error = Some(error);
+                if should_retry {
+                    let wait_ms = 500 * u64::from(attempt + 1);
+                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("AI 请求失败".to_string())))
+}
+
+fn send_ai_json_request_once(
     request: reqwest::blocking::RequestBuilder,
 ) -> AppResult<serde_json::Value> {
     let response = request.send()?;
@@ -2370,6 +2456,19 @@ fn send_ai_json_request(
         )));
     }
     Ok(serde_json::from_str(&text)?)
+}
+
+fn should_retry_ai_request(error: &AppError) -> bool {
+    match error {
+        AppError::Http(_) => true,
+        AppError::InvalidParams(message) => {
+            message.starts_with("HTTP 408")
+                || message.starts_with("HTTP 409")
+                || message.starts_with("HTTP 429")
+                || message.starts_with("HTTP 5")
+        }
+        _ => false,
+    }
 }
 
 fn run_ai_connection_test(
@@ -2620,6 +2719,13 @@ fn request_error_message(error: &reqwest::Error) -> String {
     message
 }
 
+fn app_error_message(error: &AppError) -> String {
+    match error {
+        AppError::Http(error) => request_error_message(error),
+        _ => error.to_string(),
+    }
+}
+
 fn candidate_api_base_urls(base_url: &str) -> Vec<String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -2659,11 +2765,8 @@ fn summarize_error_message(message: &str) -> String {
 }
 
 fn test_jpeg_data_url() -> String {
-    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(
-        32,
-        32,
-        image::Rgb([42, 178, 108]),
-    ));
+    let image =
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(32, 32, image::Rgb([42, 178, 108])));
     jpeg_data_url(&image, 85).unwrap_or_else(|_| {
         "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAIAAgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AV//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AV//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Al//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IV//2gAMAwEAAgADAAAAEP/EFBQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8QH//EFBQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8QH//EFBABAQAAAAAAAAAAAAAAAAAAARD/2gAIAQEAAT8QH//Z".to_string()
     })
