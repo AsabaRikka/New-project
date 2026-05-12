@@ -29,6 +29,7 @@ const demoTasks: TaskRecord[] = [
     failed_count: 0,
     output_dir: null,
     last_error: null,
+    params: {},
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -88,6 +89,14 @@ export async function listTasks(): Promise<TaskRecord[]> {
   }
 
   return invoke<TaskRecord[]>("list_tasks");
+}
+
+export async function openTaskFolder(path: string): Promise<boolean> {
+  if (!isTauriRuntime) {
+    return true;
+  }
+
+  return invoke<boolean>("open_task_folder", { path });
 }
 
 export async function listAiResults(): Promise<AiResultRecord[]> {

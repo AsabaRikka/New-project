@@ -202,6 +202,7 @@ struct TaskRecord {
     failed_count: u32,
     output_dir: Option<String>,
     last_error: Option<String>,
+    params: serde_json::Value,
     created_at: String,
     updated_at: String,
 }
@@ -714,7 +715,7 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     let mut statement = db.prepare(
         "select
             id, task_type, status, input_count, success_count, failed_count,
-            output_dir, last_error, created_at, updated_at
+            output_dir, last_error, params_json, created_at, updated_at
         from tasks
         order by datetime(created_at) desc",
     )?;
@@ -722,6 +723,7 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     let rows = statement.query_map([], |row| {
         let task_type_json: String = row.get(1)?;
         let status_json: String = row.get(2)?;
+        let params_json: String = row.get(8)?;
 
         let output_dir: Option<String> = row.get(6)?;
         let last_error: Option<String> = row.get(7)?;
@@ -735,8 +737,9 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
             last_error: last_error
                 .or_else(|| output_dir.as_deref().and_then(read_report_first_error)),
             output_dir,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            params: serde_json::from_str(&params_json).unwrap_or_else(|_| serde_json::json!({})),
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     })?;
 
@@ -746,6 +749,28 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> AppResult<Vec<TaskRecord>> {
     }
 
     Ok(records)
+}
+
+#[tauri::command]
+fn open_task_folder(path: String) -> AppResult<bool> {
+    let folder_path = PathBuf::from(path);
+    if !folder_path.exists() {
+        return Err(AppError::InvalidParams("任务文件夹不存在".to_string()));
+    }
+    if !folder_path.is_dir() {
+        return Err(AppError::InvalidParams("任务路径不是文件夹".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command.arg(&folder_path);
+    command.spawn()?;
+    Ok(true)
 }
 
 fn read_report_first_error(output_dir: &str) -> Option<String> {
@@ -3446,6 +3471,7 @@ pub fn run() {
             test_ai_connection,
             create_task,
             list_tasks,
+            open_task_folder,
             list_ai_results
         ])
         .run(tauri::generate_context!())

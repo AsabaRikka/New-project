@@ -1,8 +1,10 @@
-import { Activity, CheckCircle2, Clock3, XCircle } from "lucide-react";
+import { Activity, CheckCircle2, Clock3, FolderOpen, RefreshCcw, XCircle } from "lucide-react";
 import type { TaskRecord } from "../lib/types";
 
 interface TaskCenterProps {
   tasks: TaskRecord[];
+  onResubmitTask: (task: TaskRecord) => void;
+  onOpenTaskFolder: (task: TaskRecord) => void;
 }
 
 const statusIcon = {
@@ -16,7 +18,7 @@ const statusIcon = {
 
 const visibleTaskCount = 5;
 
-export function TaskCenter({ tasks }: TaskCenterProps) {
+export function TaskCenter({ tasks, onResubmitTask, onOpenTaskFolder }: TaskCenterProps) {
   const recentTasks = tasks.slice(0, visibleTaskCount);
   const hiddenCount = Math.max(tasks.length - recentTasks.length, 0);
 
@@ -45,6 +47,22 @@ export function TaskCenter({ tasks }: TaskCenterProps) {
                     {task.failed_count}
                   </span>
                   {task.last_error && <p className="task-row__error">{task.last_error}</p>}
+                </div>
+                <div className="task-row__actions">
+                  <button className="tiny-button" type="button" onClick={() => onResubmitTask(task)} title="把该任务参数重新填入当前面板">
+                    <RefreshCcw size={14} />
+                    重提
+                  </button>
+                  <button
+                    className="tiny-button"
+                    type="button"
+                    onClick={() => onOpenTaskFolder(task)}
+                    disabled={!task.output_dir}
+                    title={task.output_dir ? "打开该任务的输出文件夹" : "该任务没有输出文件夹"}
+                  >
+                    <FolderOpen size={14} />
+                    打开
+                  </button>
                 </div>
               </article>
             );

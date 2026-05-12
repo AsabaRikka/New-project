@@ -140,6 +140,7 @@ export interface TaskRecord {
   failed_count: number;
   output_dir: string | null;
   last_error: string | null;
+  params: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

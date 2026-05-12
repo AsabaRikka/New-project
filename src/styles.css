@@ -813,13 +813,20 @@ code {
 
 .task-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 12px;
   background: #f7fafb;
   border: 1px solid #e0e7ed;
   border-radius: 8px;
+}
+
+.task-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .task-row__error {

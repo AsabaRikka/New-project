@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import type { AiProviderDescriptor } from "./lib/aiProvider";
-import { createTask, getAppConfig, listAiResults, listTasks, saveAppConfig } from "./lib/api";
+import { createTask, getAppConfig, listAiResults, listTasks, openTaskFolder, saveAppConfig } from "./lib/api";
 import type {
   AiResultRecord,
   AppConfig,
@@ -78,6 +78,7 @@ const defaultBatchParams: BatchParams = {
 
 const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
 type AppView = "project" | "batch" | "ai" | "chat" | "settings";
+const aiTaskTypeSet = new Set<TaskType>(["ai_analyze", "ai_generate_copy", "ai_generate_title", "ai_generate_image"]);
 
 const appViews: Array<{ id: AppView; label: string; icon: typeof FolderKanban }> = [
   { id: "project", label: "项目骨架", icon: FolderKanban },
@@ -328,6 +329,36 @@ export function App() {
     setStatusMessage("已删除常用任务");
   }
 
+  function handleResubmitTask(task: TaskRecord) {
+    setBatchParams({ ...defaultBatchParams, ...task.params });
+    setExecutionMode("single");
+    setPipelineSteps([]);
+
+    if (aiTaskTypeSet.has(task.task_type)) {
+      setActiveView("ai");
+      setSelectedAiTaskType(task.task_type);
+    } else {
+      setActiveView("batch");
+      setSelectedTaskType(task.task_type);
+    }
+
+    setStatusMessage(`已重提 ${task.task_type} 参数，请确认后手动运行`);
+  }
+
+  async function handleOpenTaskFolder(task: TaskRecord) {
+    if (!task.output_dir) {
+      setStatusMessage("该任务没有可打开的输出文件夹");
+      return;
+    }
+
+    try {
+      await openTaskFolder(task.output_dir);
+      setStatusMessage("已打开任务所在文件夹");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "打开任务文件夹失败");
+    }
+  }
+
   if (!config) {
     return <main className="loading">加载中...</main>;
   }
@@ -404,7 +435,7 @@ export function App() {
             taskTypes={batchTaskTypes}
           />
 
-          <TaskCenter tasks={tasks} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
           <ProtocolPanel
             selectedTask={selectedTask}
             executionMode={executionMode}
@@ -450,7 +481,7 @@ export function App() {
           />
 
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
-          <TaskCenter tasks={tasks} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
           <AiResultsPanel results={aiResults} />
           <ProtocolPanel
             selectedTask={taskTypes.find((task) => task.type === selectedAiTaskType) ?? selectedTask}
@@ -466,13 +497,13 @@ export function App() {
         {activeView === "settings" && (
         <section className="grid-layout">
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
-          <TaskCenter tasks={tasks} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
         </section>
         )}
 
         {activeView === "project" && (
         <section className="grid-layout">
-          <TaskCenter tasks={tasks} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
           <ProtocolPanel
             selectedTask={selectedTask}
             executionMode={executionMode}
@@ -495,7 +526,7 @@ export function App() {
             </div>
             <p className="empty">对话式解决问题会在后续阶段接入。</p>
           </section>
-          <TaskCenter tasks={tasks} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
         </section>
         )}
       </section>
