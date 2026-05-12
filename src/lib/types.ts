@@ -123,6 +123,7 @@ export interface BatchParams {
   background: string;
   aiLanguage: string;
   aiPlatform: string;
+  aiPersona: string;
   aiProductContext: string;
   aiPromptExampleCount: number;
   aiGenerateCount: number;

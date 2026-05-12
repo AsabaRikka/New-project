@@ -240,6 +240,7 @@ struct AppState {
 const KEYRING_SERVICE: &str = "com.adcreativestudio.desktop";
 const KEYRING_USER: &str = "openai-api-key";
 const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
+const DEFAULT_AI_PERSONA: &str = "你是一位资深的小游戏 IAA 广告投放专家，非常熟悉腾讯广告平台及其机制，熟悉腾讯广告 3.0，熟悉腾讯广告 3.0 如何让朋友圈的图片素材起量，熟悉腾讯妙思平台对于爆图的判断标准。";
 
 #[tauri::command]
 fn get_app_config(state: tauri::State<'_, AppState>) -> AppResult<AppConfig> {
@@ -1941,6 +1942,7 @@ fn process_ai_analyze(
     let sorted = sort_paths(input_paths, &read_string(params, "sortBy", "input"));
     let language = read_string(params, "aiLanguage", "zh-CN");
     let platform = read_string(params, "aiPlatform", "通用广告");
+    let persona = read_ai_persona(params);
     let product_context = read_string(params, "aiProductContext", "");
     let prompt_examples = read_u32(params, "aiPromptExampleCount", 5).clamp(1, 12);
     let mut results = Vec::new();
@@ -1956,6 +1958,7 @@ fn process_ai_analyze(
                 ai_context,
                 &language,
                 &platform,
+                &persona,
                 &product_context,
                 prompt_examples,
             )?;
@@ -1999,6 +2002,7 @@ fn process_ai_generation_task(
     let sorted = sort_paths(input_paths, &read_string(params, "sortBy", "input"));
     let language = read_string(params, "aiLanguage", "zh-CN");
     let platform = read_string(params, "aiPlatform", "通用广告");
+    let persona = read_ai_persona(params);
     let product_context = read_string(params, "aiProductContext", "");
     let count = read_u32(params, "aiGenerateCount", 5).clamp(1, 20);
     let tone = read_string(params, "aiCopyTone", "高转化");
@@ -2017,6 +2021,7 @@ fn process_ai_generation_task(
                 kind,
                 &language,
                 &platform,
+                &persona,
                 &product_context,
                 &tone,
                 &audience,
@@ -2050,6 +2055,7 @@ fn analyze_ad_creative_image(
     ai_context: &AiTaskContext,
     language: &str,
     platform: &str,
+    persona: &str,
     product_context: &str,
     prompt_examples: u32,
 ) -> AppResult<serde_json::Value> {
@@ -2062,9 +2068,26 @@ fn analyze_ad_creative_image(
         ))
         .build()?;
 
-    match request_responses_analysis(&client, ai_context, &prompt, &image_data_url) {
+    let system_prompt = build_system_prompt(
+        persona,
+        "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。",
+    );
+
+    match request_responses_analysis(
+        &client,
+        ai_context,
+        &prompt,
+        &image_data_url,
+        &system_prompt,
+    ) {
         Ok(value) => Ok(value),
-        Err(_) => request_chat_analysis(&client, ai_context, &prompt, &image_data_url),
+        Err(_) => request_chat_analysis(
+            &client,
+            ai_context,
+            &prompt,
+            &image_data_url,
+            &system_prompt,
+        ),
     }
 }
 
@@ -2074,6 +2097,7 @@ fn generate_ai_protocol_asset(
     kind: AiGenerationKind,
     language: &str,
     platform: &str,
+    persona: &str,
     product_context: &str,
     tone: &str,
     audience: &str,
@@ -2101,7 +2125,7 @@ fn generate_ai_protocol_asset(
         AiGenerationKind::Title => "ad_title_generation",
         AiGenerationKind::Variation => "creative_variation_prompts",
     };
-    let system_prompt = match kind {
+    let role_prompt = match kind {
         AiGenerationKind::Copy => {
             "你是资深广告文案策略师。只输出符合 schema 的 JSON，不要输出 Markdown。"
         }
@@ -2112,18 +2136,25 @@ fn generate_ai_protocol_asset(
             "你是图片创意裂变与提示词工程专家。只输出符合 schema 的 JSON，不要输出 Markdown。"
         }
     };
+    let system_prompt = build_system_prompt(persona, role_prompt);
 
     let generated = match request_responses_json(
         &client,
         ai_context,
         &prompt,
         &image_data_url,
-        system_prompt,
+        &system_prompt,
         schema_name,
         schema.clone(),
     ) {
         Ok(value) => Ok(value),
-        Err(_) => request_chat_json(&client, ai_context, &prompt, &image_data_url, system_prompt),
+        Err(_) => request_chat_json(
+            &client,
+            ai_context,
+            &prompt,
+            &image_data_url,
+            &system_prompt,
+        ),
     }?;
     Ok(normalize_ai_generation_result(generated, kind))
 }
@@ -2143,18 +2174,34 @@ fn normalize_ai_generation_result(
     value
 }
 
+fn read_ai_persona(params: &serde_json::Value) -> String {
+    let persona = read_string(params, "aiPersona", DEFAULT_AI_PERSONA);
+    if persona.trim().is_empty() {
+        DEFAULT_AI_PERSONA.to_string()
+    } else {
+        persona
+    }
+}
+
+fn build_system_prompt(persona: &str, role_instruction: &str) -> String {
+    format!(
+        "{persona}\n\n{role_instruction}\n\n请始终基于上述人设、平台机制、素材起量经验和爆图判断标准进行判断。"
+    )
+}
+
 fn request_responses_analysis(
     client: &reqwest::blocking::Client,
     ai_context: &AiTaskContext,
     prompt: &str,
     image_data_url: &str,
+    system_prompt: &str,
 ) -> AppResult<serde_json::Value> {
     request_responses_json(
         client,
         ai_context,
         prompt,
         image_data_url,
-        "你是资深广告素材策略师。只输出符合 schema 的 JSON，不要输出 Markdown。",
+        system_prompt,
         "ad_creative_analysis",
         ad_analysis_schema(),
     )
@@ -2223,14 +2270,9 @@ fn request_chat_analysis(
     ai_context: &AiTaskContext,
     prompt: &str,
     image_data_url: &str,
+    system_prompt: &str,
 ) -> AppResult<serde_json::Value> {
-    request_chat_json(
-        client,
-        ai_context,
-        prompt,
-        image_data_url,
-        "你是资深广告素材策略师。只输出 JSON，不要输出 Markdown。",
-    )
+    request_chat_json(client, ai_context, prompt, image_data_url, system_prompt)
 }
 
 fn request_chat_json(

@@ -662,6 +662,14 @@ export function BatchToolPanel({
             </>
           )}
           <label className="form-grid__full">
+            <span>AI 人设 / 专家角色</span>
+            <textarea
+              value={params.aiPersona}
+              onChange={(event) => updateParams({ aiPersona: event.target.value })}
+              placeholder="例如：你是一位资深的小游戏 IAA 广告投放专家，熟悉腾讯广告平台和爆图判断标准"
+            />
+          </label>
+          <label className="form-grid__full">
             <span>产品/业务补充</span>
             <textarea
               value={params.aiProductContext}

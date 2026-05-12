@@ -22,6 +22,9 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TaskCenter } from "./components/TaskCenter";
 import { AiResultsPanel } from "./components/AiResultsPanel";
 
+const defaultAiPersona =
+  "你是一位资深的小游戏 IAA 广告投放专家，非常熟悉腾讯广告平台及其机制，熟悉腾讯广告 3.0，熟悉腾讯广告 3.0 如何让朋友圈的图片素材起量，熟悉腾讯妙思平台对于爆图的判断标准。";
+
 const taskTypes: Array<{ type: TaskType; label: string; description: string }> = [
   { type: "rename", label: "图片重命名", description: "按项目规则生成批量命名任务" },
   { type: "resize", label: "图片改尺寸", description: "宽高、比例和适配模式将在 Phase 1 实现" },
@@ -65,6 +68,7 @@ const defaultBatchParams: BatchParams = {
   background: "#ffffff",
   aiLanguage: "zh-CN",
   aiPlatform: "通用广告",
+  aiPersona: defaultAiPersona,
   aiProductContext: "",
   aiPromptExampleCount: 5,
   aiGenerateCount: 5,
