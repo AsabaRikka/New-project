@@ -2275,7 +2275,7 @@ fn request_responses_json(
                 "role": "user",
                 "content": [
                     { "type": "input_text", "text": prompt },
-                    { "type": "input_image", "image_url": image_data_url }
+                    { "type": "input_image", "image_url": image_data_url, "detail": "low" }
                 ]
             }
         ],
@@ -2291,15 +2291,14 @@ fn request_responses_json(
     let mut last_error: Option<AppError> = None;
     for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
         let url = join_api_endpoint(&base_url, "responses");
-        match client
+        match send_ai_json_request(
+            client
             .post(url)
             .bearer_auth(&ai_context.api_key)
-            .json(&body)
-            .send()
-            .and_then(|response| response.error_for_status())
+            .json(&body),
+        )
         {
             Ok(response) => {
-                let response: serde_json::Value = response.json()?;
                 return parse_model_json_output(&response);
             }
             Err(error) => last_error = Some(error.into()),
@@ -2345,21 +2344,38 @@ fn request_chat_json(
     let mut last_error: Option<AppError> = None;
     for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
         let url = join_api_endpoint(&base_url, "chat/completions");
-        match client
+        match send_ai_json_request(
+            client
             .post(url)
             .bearer_auth(&ai_context.api_key)
-            .json(&body)
-            .send()
-            .and_then(|response| response.error_for_status())
+            .json(&body),
+        )
         {
             Ok(response) => {
-                let response: serde_json::Value = response.json()?;
                 return parse_model_json_output(&response);
             }
             Err(error) => last_error = Some(error.into()),
         }
     }
     Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
+}
+
+fn send_ai_json_request(
+    request: reqwest::blocking::RequestBuilder,
+) -> AppResult<serde_json::Value> {
+    let response = request.send()?;
+    let status = response.status();
+    let text = response
+        .text()
+        .unwrap_or_else(|_| "无法读取错误响应".to_string());
+    if !status.is_success() {
+        return Err(AppError::InvalidParams(format!(
+            "HTTP {} {}",
+            status.as_u16(),
+            summarize_error_message(&text)
+        )));
+    }
+    Ok(serde_json::from_str(&text)?)
 }
 
 fn run_ai_connection_test(
@@ -2424,6 +2440,7 @@ fn test_vision_model(
     client: &reqwest::blocking::Client,
     context: &AiTaskContext,
 ) -> AiConnectionTestResult {
+    let test_image = test_jpeg_data_url();
     let responses_body = json!({
         "model": context.config.vision_model,
         "input": [
@@ -2431,7 +2448,7 @@ fn test_vision_model(
                 "role": "user",
                 "content": [
                     { "type": "input_text", "text": "Reply with one short word describing the image color." },
-                    { "type": "input_image", "image_url": test_png_data_url() }
+                    { "type": "input_image", "image_url": test_image, "detail": "low" }
                 ]
             }
         ]
@@ -2443,7 +2460,7 @@ fn test_vision_model(
                 "role": "user",
                 "content": [
                     { "type": "text", "text": "Reply with one short word describing the image color." },
-                    { "type": "image_url", "image_url": { "url": test_png_data_url() } }
+                    { "type": "image_url", "image_url": { "url": test_image } }
                 ]
             }
         ],
@@ -2647,8 +2664,15 @@ fn summarize_error_message(message: &str) -> String {
     message.chars().take(500).collect()
 }
 
-fn test_png_data_url() -> &'static str {
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGNk+M8AAwUBAWwA0L4AAAAASUVORK5CYII="
+fn test_jpeg_data_url() -> String {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(
+        32,
+        32,
+        image::Rgb([42, 178, 108]),
+    ));
+    jpeg_data_url(&image, 85).unwrap_or_else(|_| {
+        "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAIAAgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AV//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AV//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Al//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IV//2gAMAwEAAgADAAAAEP/EFBQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8QH//EFBQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8QH//EFBABAQAAAAAAAAAAAAAAAAAAARD/2gAIAQEAAT8QH//Z".to_string()
+    })
 }
 
 fn build_ad_analysis_prompt(
@@ -2877,21 +2901,33 @@ fn parse_json_text(text: &str) -> AppResult<serde_json::Value> {
 }
 
 fn image_data_url(input: &Path) -> AppResult<String> {
-    let bytes = fs::read(input)?;
-    let mime = mime_for_image(input)?;
-    Ok(format!(
-        "data:{mime};base64,{}",
-        general_purpose::STANDARD.encode(bytes)
-    ))
+    let image = image::open(input)?;
+    let image = resize_image_for_vision(image);
+    jpeg_data_url(&image, 86)
 }
 
-fn mime_for_image(input: &Path) -> AppResult<&'static str> {
-    match normalized_extension(input).as_deref() {
-        Some("jpg") | Some("jpeg") => Ok("image/jpeg"),
-        Some("png") => Ok("image/png"),
-        Some("webp") => Ok("image/webp"),
-        _ => Err(AppError::UnsupportedFormat(file_name(input))),
+fn resize_image_for_vision(image: DynamicImage) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    let longest_edge = width.max(height);
+    if longest_edge <= 1280 {
+        return image;
     }
+
+    let scale = 1280.0 / longest_edge as f32;
+    let next_width = ((width as f32) * scale).round().max(1.0) as u32;
+    let next_height = ((height as f32) * scale).round().max(1.0) as u32;
+    image.resize(next_width, next_height, FilterType::Lanczos3)
+}
+
+fn jpeg_data_url(image: &DynamicImage, quality: u8) -> AppResult<String> {
+    let mut bytes = Vec::new();
+    let rgb = image.to_rgb8();
+    let mut encoder = JpegEncoder::new_with_quality(&mut bytes, quality.clamp(1, 100));
+    encoder.encode(&rgb, rgb.width(), rgb.height(), ColorType::Rgb8.into())?;
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 fn write_ai_summary_files(report_dir: &Path, files: &[FileResult]) -> AppResult<()> {
