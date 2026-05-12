@@ -14,6 +14,7 @@ const demoConfig: AppConfig = {
     text_model: "gpt-4.1-mini",
     vision_model: "gpt-4.1-mini",
     image_model: "gpt-image-1",
+    proxy_url: "http://127.0.0.1:7890",
     timeout_seconds: 60,
     max_retries: 2,
   },

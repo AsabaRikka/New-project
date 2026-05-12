@@ -143,6 +143,20 @@ export function SettingsPanel({ config, onChange, onSave }: SettingsPanelProps) 
           />
         </label>
 
+        <label className="form-grid__full">
+          <span>代理 URL</span>
+          <input
+            value={ai.proxy_url ?? ""}
+            placeholder="例如：http://127.0.0.1:7890，留空则不使用显式代理"
+            onChange={(event) =>
+              onChange({
+                ...config,
+                ai_provider: { ...ai, proxy_url: event.target.value.trim() || null },
+              })
+            }
+          />
+        </label>
+
         <label>
           <span>超时秒数</span>
           <input

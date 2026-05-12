@@ -26,6 +26,7 @@ export interface AiProviderConfig {
   text_model: string;
   vision_model: string;
   image_model: string;
+  proxy_url: string | null;
   timeout_seconds: number;
   max_retries: number;
 }

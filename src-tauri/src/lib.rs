@@ -64,8 +64,14 @@ struct AiProviderConfig {
     text_model: String,
     vision_model: String,
     image_model: String,
+    #[serde(default = "default_proxy_url")]
+    proxy_url: Option<String>,
     timeout_seconds: u64,
     max_retries: u8,
+}
+
+fn default_proxy_url() -> Option<String> {
+    Some("http://127.0.0.1:7890".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +95,7 @@ impl Default for AppConfig {
                 text_model: "gpt-4.1-mini".to_string(),
                 vision_model: "gpt-4.1-mini".to_string(),
                 image_model: "gpt-image-1".to_string(),
+                proxy_url: Some("http://127.0.0.1:7890".to_string()),
                 timeout_seconds: 60,
                 max_retries: 2,
             },
@@ -353,11 +360,7 @@ fn test_ai_connection(
         ],
         target => vec![target],
     };
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            context.config.timeout_seconds.max(10),
-        ))
-        .build()?;
+    let client = build_ai_http_client(&context.config)?;
 
     Ok(targets
         .into_iter()
@@ -1949,6 +1952,16 @@ impl AiTaskContext {
     }
 }
 
+fn build_ai_http_client(config: &AiProviderConfig) -> AppResult<reqwest::blocking::Client> {
+    let mut builder = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(
+        config.timeout_seconds.max(10),
+    ));
+    if let Some(proxy_url) = config.proxy_url.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
+    }
+    Ok(builder.build()?)
+}
+
 #[derive(Clone, Copy)]
 enum AiGenerationKind {
     Copy,
@@ -2098,11 +2111,7 @@ fn analyze_ad_creative_image(
         reverse_prompt_mode,
         prompt_examples,
     );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            ai_context.config.timeout_seconds.max(10),
-        ))
-        .build()?;
+    let client = build_ai_http_client(&ai_context.config)?;
 
     let system_prompt = build_system_prompt(
         persona,
@@ -2152,11 +2161,7 @@ fn generate_ai_protocol_asset(
         variation_direction,
         count,
     );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            ai_context.config.timeout_seconds.max(10),
-        ))
-        .build()?;
+    let client = build_ai_http_client(&ai_context.config)?;
     let schema = ai_generation_schema(kind);
     let schema_name = match kind {
         AiGenerationKind::Copy => "ad_copy_generation",
@@ -2588,9 +2593,20 @@ fn parse_test_response(
             model: model.to_string(),
             ok: false,
             status: error.status().map(|status| status.as_u16()),
-            message: error.to_string(),
+            message: request_error_message(&error),
         },
     }
+}
+
+fn request_error_message(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(error_source) = source {
+        message.push_str(": ");
+        message.push_str(&error_source.to_string());
+        source = error_source.source();
+    }
+    message
 }
 
 fn candidate_api_base_urls(base_url: &str) -> Vec<String> {
