@@ -2191,7 +2191,7 @@ fn generate_ai_protocol_asset(
         schema.clone(),
     ) {
         Ok(value) => Ok(value),
-        Err(_) => request_chat_json(
+        Err(_) => request_responses_plain_json(
             &client,
             ai_context,
             &prompt,
@@ -2287,6 +2287,53 @@ fn request_responses_json(
                 "schema": schema
             }
         }
+    });
+    let mut last_error: Option<AppError> = None;
+    for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
+        let url = join_api_endpoint(&base_url, "responses");
+        match send_ai_json_request(
+            client
+            .post(url)
+            .bearer_auth(&ai_context.api_key)
+            .json(&body),
+        )
+        {
+            Ok(response) => {
+                return parse_model_json_output(&response);
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| AppError::InvalidParams("API Base URL 不能为空".to_string())))
+}
+
+fn request_responses_plain_json(
+    client: &reqwest::blocking::Client,
+    ai_context: &AiTaskContext,
+    prompt: &str,
+    image_data_url: &str,
+    system_prompt: &str,
+) -> AppResult<serde_json::Value> {
+    let body = json!({
+        "model": ai_context.config.vision_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": format!("{system_prompt}\n\n请只输出一个 JSON 对象，不要输出 Markdown、解释或代码块。")
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": prompt },
+                    { "type": "input_image", "image_url": image_data_url, "detail": "low" }
+                ]
+            }
+        ]
     });
     let mut last_error: Option<AppError> = None;
     for base_url in candidate_api_base_urls(&ai_context.config.base_url) {
