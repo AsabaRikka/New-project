@@ -408,14 +408,75 @@ code {
   gap: 10px;
 }
 
+.panel--wide {
+  grid-column: span 2;
+}
+
+.library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  justify-content: space-between;
+  margin: 14px 0;
+}
+
+.library-toolbar label {
+  min-width: 180px;
+}
+
+.library-count {
+  color: #647588;
+  font-size: 13px;
+}
+
+.segmented-control--compact {
+  margin-top: 12px;
+}
+
+.ai-result-grid,
+.copy-library-list {
+  display: grid;
+  gap: 12px;
+}
+
 .ai-result-card {
   display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
   color: #314253;
   background: #f7fafb;
   border: 1px solid #e0e7ed;
   border-radius: 8px;
+}
+
+.ai-result-card--starred,
+.copy-library-card--starred {
+  border-color: #d0b45f;
+  background: #fffdf3;
+}
+
+.ai-result-card__thumb {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  min-height: 132px;
+  background: #e9f0f3;
+  border: 1px solid #dae4eb;
+  border-radius: 8px;
+}
+
+.ai-result-card__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-result-card__body {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
 }
 
 .ai-result-card__header {
@@ -485,6 +546,44 @@ code {
   display: inline-flex;
   gap: 5px;
   align-items: center;
+}
+
+.copy-library-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+
+.copy-library-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  color: #314253;
+  background: #f7fafb;
+  border: 1px solid #e0e7ed;
+  border-radius: 8px;
+}
+
+.copy-library-card p {
+  margin: 5px 0;
+  color: #3c4c5d;
+  line-height: 1.5;
+}
+
+.copy-library-card span {
+  color: #647588;
+  font-size: 12px;
+}
+
+.copy-library-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .toolbar {
@@ -849,8 +948,15 @@ code {
 
   .grid-layout,
   .form-grid,
-  .inline-field {
+  .inline-field,
+  .ai-result-card,
+  .copy-library-add,
+  .copy-library-card {
     grid-template-columns: 1fr;
+  }
+
+  .panel--wide {
+    grid-column: span 1;
   }
 
   .queue-toolbar {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Bot, FolderKanban, Image, Layers3, Settings, WandSparkles } from "lucide-react";
+import { Bot, FolderKanban, Image, Layers3, Library, Settings, WandSparkles } from "lucide-react";
 import { createOpenAiCompatibleProvider, getProviderEndpoint } from "./lib/aiProvider";
 import type { AiProviderDescriptor } from "./lib/aiProvider";
 import { createTask, getAppConfig, listAiResults, listTasks, openTaskFolder, saveAppConfig } from "./lib/api";
@@ -77,21 +77,23 @@ const defaultBatchParams: BatchParams = {
 };
 
 const favoriteTasksStorageKey = "ad-creative-studio.favorite-tasks";
-type AppView = "project" | "batch" | "ai" | "chat" | "settings";
+type AppView = "project" | "ai" | "library" | "batch" | "chat" | "settings";
 const aiTaskTypeSet = new Set<TaskType>(["ai_analyze", "ai_generate_copy", "ai_generate_title", "ai_generate_image"]);
 
 const appViews: Array<{ id: AppView; label: string; icon: typeof FolderKanban }> = [
   { id: "project", label: "项目骨架", icon: FolderKanban },
-  { id: "batch", label: "批量工具", icon: Layers3 },
   { id: "ai", label: "AI 协议层", icon: WandSparkles },
+  { id: "library", label: "AI 结果库", icon: Library },
+  { id: "batch", label: "批量工具", icon: Layers3 },
   { id: "chat", label: "对话模式", icon: Bot },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
 const viewMeta: Record<AppView, { eyebrow: string; title: string; icon: typeof FolderKanban }> = {
   project: { eyebrow: "Desktop App Foundation", title: "项目骨架", icon: FolderKanban },
-  batch: { eyebrow: "Phase 1", title: "图片批量工具", icon: Layers3 },
   ai: { eyebrow: "Phase 2", title: "AI 协议层", icon: WandSparkles },
+  library: { eyebrow: "AI Library", title: "AI 分析结果与文案库", icon: Library },
+  batch: { eyebrow: "Phase 1", title: "图片批量工具", icon: Layers3 },
   chat: { eyebrow: "Phase 3", title: "对话模式", icon: Bot },
   settings: { eyebrow: "Phase 0", title: "设置", icon: Settings },
 };
@@ -359,6 +361,25 @@ export function App() {
     }
   }
 
+  function handleRegenerateFromResult(result: AiResultRecord, mode: "reverse_prompt" | "prompt_template") {
+    const extractedText = extractResultPromptText(result);
+    setInputs([result.input_path]);
+    setExecutionMode("single");
+    setPipelineSteps([]);
+    setActiveView("ai");
+    setSelectedAiTaskType("ai_generate_image");
+    setBatchParams({
+      ...defaultBatchParams,
+      ...batchParams,
+      aiProductContext:
+        mode === "reverse_prompt"
+          ? `基于历史 AI 结果反推并重生成图片提示词。\n来源图片：${result.input_path}\n历史结果：${extractedText}`
+          : `基于历史 AI 结果整理为可复用提示词模板并重生成。\n来源图片：${result.input_path}\n模板素材：${extractedText}`,
+      aiGenerateCount: mode === "reverse_prompt" ? 5 : 8,
+    });
+    setStatusMessage(mode === "reverse_prompt" ? "已填入反推提示词重生成参数，请确认后提交" : "已填入提示词模板重生成参数，请确认后提交");
+  }
+
   if (!config) {
     return <main className="loading">加载中...</main>;
   }
@@ -482,7 +503,6 @@ export function App() {
 
           <SettingsPanel config={config} onChange={setConfig} onSave={handleSaveConfig} />
           <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
-          <AiResultsPanel results={aiResults} />
           <ProtocolPanel
             selectedTask={taskTypes.find((task) => task.type === selectedAiTaskType) ?? selectedTask}
             executionMode="single"
@@ -491,6 +511,13 @@ export function App() {
             aiProvider={aiProvider}
             onCreatePreviewTask={handleCreatePreviewTask}
           />
+        </section>
+        )}
+
+        {activeView === "library" && (
+        <section className="grid-layout">
+          <AiResultsPanel results={aiResults} onRegenerateFromResult={handleRegenerateFromResult} />
+          <TaskCenter tasks={tasks} onResubmitTask={handleResubmitTask} onOpenTaskFolder={handleOpenTaskFolder} />
         </section>
         )}
 
@@ -619,6 +646,25 @@ function clonePipelineStep(step: TaskPipelineStep): TaskPipelineStep {
     task_type: step.task_type,
     params: { ...step.params },
   };
+}
+
+function extractResultPromptText(result: AiResultRecord) {
+  const parts = [
+    result.analysis_json.summary,
+    result.analysis_json.hook_analysis?.core_hook,
+    result.analysis_json.extracted_prompt,
+    ...(result.analysis_json.prompt_examples ?? []),
+    ...(result.analysis_json.items ?? []).flatMap((item) =>
+      ["title", "main_copy", "short_copy", "prompt", "angle", "cta"]
+        .map((key) => item[key])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+    ),
+  ];
+
+  return parts
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .slice(0, 12)
+    .join("\n");
 }
 
 function createEmptyTaskSummary(results: TaskResult[]): TaskResult {
