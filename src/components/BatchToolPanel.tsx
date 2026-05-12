@@ -7,6 +7,7 @@ import {
   CopyPlus,
   FolderOpen,
   Grid2X2,
+  Info,
   Images,
   List,
   Play,
@@ -641,7 +642,12 @@ export function BatchToolPanel({
             </select>
           </label>
           {taskType === "ai_analyze" ? (
-            <NumberField label="提示词示例数" value={params.aiPromptExampleCount} onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })} />
+            <NumberField
+              label="提示词示例数"
+              help="控制 AI 广告分析结果里生成多少条可复用提示词示例。只影响输出数量，不决定 AI 的专业判断方向。"
+              value={params.aiPromptExampleCount}
+              onChange={(aiPromptExampleCount) => updateParams({ aiPromptExampleCount })}
+            />
           ) : (
             <>
               <NumberField label={taskType === "ai_generate_image" ? "裂变提示词数量" : "生成数量"} value={params.aiGenerateCount} onChange={(aiGenerateCount) => updateParams({ aiGenerateCount })} />
@@ -662,7 +668,10 @@ export function BatchToolPanel({
             </>
           )}
           <label className="form-grid__full">
-            <span>AI 人设 / 专家角色</span>
+            <FieldLabel
+              text="AI 人设 / 专家角色"
+              help="决定 AI 用什么专家身份和判断标准来思考。比如小游戏 IAA 投放专家、腾讯广告 3.0 起量经验、妙思爆图标准等。"
+            />
             <textarea
               value={params.aiPersona}
               onChange={(event) => updateParams({ aiPersona: event.target.value })}
@@ -670,7 +679,10 @@ export function BatchToolPanel({
             />
           </label>
           <label className="form-grid__full">
-            <span>产品/业务补充</span>
+            <FieldLabel
+              text="产品/业务补充"
+              help="补充图片里看不到但投放很重要的信息，例如产品类型、目标人群、卖点、投放渠道限制、品牌禁用词或合规要求。"
+            />
             <textarea
               value={params.aiProductContext}
               onChange={(event) => updateParams({ aiProductContext: event.target.value })}
@@ -766,19 +778,35 @@ function summarizeStepParams(step: TaskPipelineStep) {
 
 function NumberField({
   label,
+  help,
   value,
   disabled = false,
   onChange,
 }: {
   label: string;
+  help?: string;
   value: number;
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
   return (
     <label>
-      <span>{label}</span>
+      <FieldLabel text={label} help={help} />
       <input type="number" value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
+  );
+}
+
+function FieldLabel({ text, help }: { text: string; help?: string }) {
+  return (
+    <span className="field-label">
+      {text}
+      {help && (
+        <span className="field-help" tabIndex={0} aria-label={help}>
+          <Info size={13} />
+          <span className="field-help__bubble">{help}</span>
+        </span>
+      )}
+    </span>
   );
 }

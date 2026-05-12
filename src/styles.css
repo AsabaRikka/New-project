@@ -191,6 +191,50 @@ label {
   font-weight: 600;
 }
 
+.field-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.field-help {
+  position: relative;
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  color: #577065;
+  background: #e7f4ef;
+  border: 1px solid #c3e2d8;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.field-help__bubble {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  display: none;
+  width: min(320px, 72vw);
+  padding: 10px 12px;
+  color: #243446;
+  background: #ffffff;
+  border: 1px solid #d6e0e7;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(28, 38, 50, 0.14);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  transform: translateX(-50%);
+}
+
+.field-help:hover .field-help__bubble,
+.field-help:focus .field-help__bubble {
+  display: block;
+}
+
 .form-grid__full {
   grid-column: 1 / -1;
 }
